@@ -81,6 +81,15 @@ class MujocoEnvironment:
         return self._render_jpeg()
 
     def current_state(self) -> RobotState:
+        if self._data is None:
+            return RobotState(
+                position=(0.0, 0.0, 0.0),
+                orientation=0.0,
+                camera_frame=b"",
+                battery=1.0,
+                is_standing=False,
+                contacts=[],
+            )
         return self._state()
 
     def get_distance_to(self, target_id: str) -> float | None:

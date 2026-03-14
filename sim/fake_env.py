@@ -46,7 +46,7 @@ class FakeEnvironment:
         self._x: float = 0.0
         self._y: float = 0.0
         self._yaw: float = 0.0        # degrees, 0 = east
-        self._standing: bool = True
+        self._standing: bool = False
         self._targets: dict[str, tuple[float, float]] = {}
         self._scanned: set[str] = set()
         self._mission_id: str = ""
@@ -59,7 +59,7 @@ class FakeEnvironment:
         if mission_id not in SCENES:
             raise ValueError(f"Unknown mission_id: '{mission_id}'. Valid: {list(SCENES)}")
         self._x, self._y, self._yaw = 0.0, 0.0, 0.0
-        self._standing = True
+        self._standing = False
         self._scanned = set()
         self._mission_id = mission_id
         self._targets = dict(SCENES[mission_id])
