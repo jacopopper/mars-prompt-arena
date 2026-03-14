@@ -232,8 +232,7 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
         results = []
         latest_state = session.robot_state
         for action in actions:
-            result = await asyncio.to_thread(
-                session.dispatcher.execute,
+            result = session.dispatcher.execute(
                 action,
                 session.env,
                 latest_state,
