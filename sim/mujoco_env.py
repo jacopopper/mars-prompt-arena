@@ -58,6 +58,7 @@ class MujocoEnvironment:
         scene = SCENE_PATH[mission_id]
         self._model = mujoco.MjModel.from_xml_path(scene)
         self._data  = mujoco.MjData(self._model)
+        self._inject_terrain()
         self._renderer = mujoco.Renderer(
             self._model,
             height=SimConfig.CAMERA_HEIGHT,
@@ -130,6 +131,39 @@ class MujocoEnvironment:
     def close(self) -> None:
         if self._renderer:
             self._renderer.close()
+
+    def _inject_terrain(self) -> None:
+        """Generate a procedural Martian heightmap and inject it into the hfield asset."""
+        hfield_id = mujoco.mj_name2id(
+            self._model, mujoco.mjtObj.mjOBJ_HFIELD, "terrain"
+        )
+        if hfield_id < 0:
+            return  # scene has no hfield
+
+        nrow = int(self._model.hfield_nrow[hfield_id])
+        ncol = int(self._model.hfield_ncol[hfield_id])
+
+        # Deterministic per mission so each mission has a distinct terrain
+        rng = np.random.default_rng(hash(self._mission_id) % (2 ** 32))
+
+        x = np.linspace(0, 5 * np.pi, ncol)
+        y = np.linspace(0, 5 * np.pi, nrow)
+        xx, yy = np.meshgrid(x, y)
+
+        # Multi-frequency sine waves + small noise → organic rolling terrain
+        h = (
+            0.30 * np.sin(xx * 0.6) * np.cos(yy * 0.5)
+            + 0.20 * np.cos(xx * 1.2 + 0.9) * np.sin(yy * 1.0)
+            + 0.12 * np.sin(xx * 2.3 + 1.4) * np.cos(yy * 2.1 + 0.7)
+            + 0.08 * rng.standard_normal((nrow, ncol))
+        )
+
+        # Normalise to [0, 1] then scale down (max ~30% of z_scale → ~15 cm bumps)
+        h = (h - h.min()) / (h.max() - h.min() + 1e-9)
+        h = h * 0.30
+
+        adr = int(self._model.hfield_adr[hfield_id])
+        self._model.hfield_data[adr : adr + nrow * ncol] = h.astype(np.float32).flatten()
 
     # ------------------------------------------------------------------
     # Skills

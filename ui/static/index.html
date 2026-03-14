@@ -1,219 +1,127 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Mars Prompt Arena</title>
-    <link rel="stylesheet" href="/static/styles.css">
-  </head>
-  <body>
-    <div class="page-shell">
-      <header class="hero">
-        <div>
-          <p class="eyebrow">Mission Control</p>
-          <h1>Mars Prompt Arena</h1>
-          <p class="tagline">Guide CANIS-1 through prompt-driven exploration on Mars.</p>
-        </div>
-        <div class="connection-card">
-          <span id="connection-pill" class="pill pill-idle">Connecting</span>
-          <button id="reset-button" type="button" class="ghost-button">Reset Session</button>
-        </div>
-      </header>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mars Prompt Arena</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
 
-      <main class="main-grid">
-        <section class="panel control-panel">
-          <div class="panel-header">
-            <h2>Mission Select</h2>
-            <p>Pick a mission, then steer the robot with prompts.</p>
+    <!-- TOP BAR -->
+    <header class="topbar">
+      <div class="topbar-brand">
+        <span class="brand-tag">CANIS-1</span>
+        <span class="brand-name">Mars Prompt Arena</span>
+      </div>
+      <div class="topbar-right">
+        <span id="connection-pill" class="pill pill-idle">Connecting</span>
+        <span id="sim-mode-pill" class="pill">SIM: fake</span>
+        <span id="brain-mode-pill" class="pill">BRAIN: mock</span>
+        <button id="reset-button" class="ghost-button" type="button">Reset</button>
+      </div>
+    </header>
+
+    <!-- WORKSPACE: camera left, chat right -->
+    <div class="workspace">
+
+      <!-- LEFT: CAMERA HERO -->
+      <div class="camera-column">
+        <div class="camera-wrap">
+          <img id="camera-image" alt="CANIS-1 camera feed" class="hidden">
+          <div id="camera-placeholder" class="camera-placeholder">
+            <span>Awaiting camera feed</span>
           </div>
+          <!-- HUD overlay anchored to bottom-left -->
+          <div class="camera-hud">
+            <span id="hud-mission-label" class="hud-tag">No mission</span>
+            <span id="hud-status" class="hud-tag">idle</span>
+            <span id="hud-phase" class="hud-tag hud-accent">--</span>
+            <span id="hud-prompts" class="hud-tag hud-warn">0 / 0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: MISSION PANEL + CONVERSATION + INPUT -->
+      <div class="chat-column">
+
+        <!-- MISSION SELECT + HUD MINI -->
+        <div class="mission-panel">
           <div class="mission-buttons">
-            <button type="button" class="mission-button" data-mission-id="wake_up">Wake Up</button>
-            <button type="button" class="mission-button" data-mission-id="storm">Storm</button>
-            <button type="button" class="mission-button" data-mission-id="signal">Signal</button>
+            <button class="mission-button" data-mission-id="wake_up" type="button">Wake Up</button>
+            <button class="mission-button" data-mission-id="storm" type="button">Storm</button>
+            <button class="mission-button" data-mission-id="signal" type="button">Signal</button>
           </div>
-
-          <div class="status-strip">
-            <span id="sim-mode-pill" class="pill">SIM: fake</span>
-            <span id="brain-mode-pill" class="pill">BRAIN: mock</span>
-            <span id="phase-pill" class="pill">PHASE: idle</span>
+          <div class="hud-mini">
+            <div class="hud-row">
+              <span class="hud-label">Objective</span>
+              <span id="objective-value" class="hud-val">Select a mission to begin.</span>
+            </div>
+            <div class="hud-row hud-metrics">
+              <div class="hud-metric">
+                <span class="hud-label">Prompts</span>
+                <strong id="prompts-value">0 / 0</strong>
+              </div>
+              <div class="hud-metric">
+                <span class="hud-label">Timer</span>
+                <strong id="timer-value">--</strong>
+              </div>
+              <div class="hud-metric">
+                <span class="hud-label">Found</span>
+                <strong id="discoveries-value">0</strong>
+              </div>
+            </div>
           </div>
-
-          <form id="prompt-form" class="prompt-form">
-            <label for="prompt-input">Operator Prompt</label>
-            <textarea id="prompt-input" rows="4" placeholder="Stand up, scan the horizon, and head for the base."></textarea>
-            <button id="send-button" type="submit" class="primary-button">Send Prompt</button>
-          </form>
-
           <div id="error-banner" class="error-banner hidden"></div>
-          <div id="summary-card" class="summary-card hidden"></div>
-        </section>
+        </div>
 
-        <section class="panel views-panel">
-          <div class="panel-header">
-            <h2>Live Views</h2>
-            <p>Robot perception and operator-side spatial context.</p>
-          </div>
-          <div class="views-grid">
-            <article class="view-card">
-              <div class="view-card-header">
-                <h3>Robot POV</h3>
-                <p>The only camera frame sent into Gemini planning.</p>
-              </div>
-              <div class="camera-frame">
-                <img id="robot-camera-image" alt="Robot point-of-view camera feed">
-                <div id="robot-camera-placeholder" class="view-placeholder">Awaiting robot POV.</div>
-              </div>
-            </article>
-
-            <article class="view-card">
-              <div class="view-card-header">
-                <h3>3D Spectator</h3>
-                <p>Secondary operator view. Populates when Builder A exposes it.</p>
-              </div>
-              <div class="camera-frame spectator-frame">
-                <img id="spectator-camera-image" alt="Spectator 3D view">
-                <div id="spectator-camera-placeholder" class="view-placeholder">
-                  Spectator view unavailable in the active backend.
-                </div>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <section class="panel hud-panel">
-          <div class="panel-header">
-            <h2>Mission HUD</h2>
-            <p id="mission-title">No mission active</p>
-          </div>
-          <dl class="hud-grid">
-            <div>
-              <dt>Status</dt>
-              <dd id="status-value">idle</dd>
-            </div>
-            <div>
-              <dt>Objective</dt>
-              <dd id="objective-value">Select a mission to begin.</dd>
-            </div>
-            <div>
-              <dt>Prompts</dt>
-              <dd id="prompts-value">0 / 0</dd>
-            </div>
-            <div>
-              <dt>Timer</dt>
-              <dd id="timer-value">--</dd>
-            </div>
-            <div>
-              <dt>Discoveries</dt>
-              <dd id="discoveries-value">0</dd>
-            </div>
-            <div>
-              <dt>Plan Provider</dt>
-              <dd id="plan-provider-value">--</dd>
-            </div>
-            <div>
-              <dt>Narration Provider</dt>
-              <dd id="narration-provider-value">--</dd>
-            </div>
-            <div>
-              <dt>Fallback</dt>
-              <dd id="fallback-value">--</dd>
-            </div>
-            <div>
-              <dt>Retries</dt>
-              <dd id="retries-value">0 / 0</dd>
-            </div>
-            <div>
-              <dt>Summary</dt>
-              <dd id="summary-value">Waiting for mission start.</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section class="panel trace-panel">
-          <div class="panel-header">
-            <h2>Tool Trace</h2>
-            <p>Validated actions planned for the current turn.</p>
-          </div>
-          <ul id="tool-trace-list" class="log-list empty-state">
-            <li>No actions planned yet.</li>
+        <!-- CONVERSATION LOG (scrollable) -->
+        <div class="conversation-wrap" id="conversation-wrap">
+          <ul id="conversation-list" class="conversation-list">
+            <li class="conv-empty">Start a mission and send your first command.</li>
           </ul>
-        </section>
+        </div>
 
-        <section class="panel narration-panel">
-          <div class="panel-header">
-            <h2>Narration Log</h2>
-            <p>CANIS-1 reports back here after every turn.</p>
-          </div>
-          <ul id="narration-list" class="log-list empty-state">
-            <li>No narration yet.</li>
-          </ul>
-        </section>
+        <!-- CHAT INPUT BAR -->
+        <form id="prompt-form" class="chat-input-form">
+          <textarea
+            id="prompt-input"
+            rows="1"
+            placeholder="Command CANIS-1… (Enter to send)"
+            disabled
+          ></textarea>
+          <button id="send-button" type="submit" class="send-button" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </form>
 
-        <section class="panel history-panel">
-          <div class="panel-header">
-            <h2>Prompt History</h2>
-            <p>The UI reflects backend truth, not client guesses.</p>
-          </div>
-          <ul id="history-list" class="log-list empty-state">
-            <li>No prompts submitted yet.</li>
-          </ul>
-        </section>
+      </div><!-- end chat-column -->
+    </div><!-- end workspace -->
 
-        <section class="panel debug-panel">
-          <div class="panel-header">
-            <h2>Gemini Debug</h2>
-            <p>Latest provider traces, raw calls, and inspection handles for builders.</p>
-          </div>
-          <dl class="hud-grid debug-grid">
-            <div>
-              <dt>Turn ID</dt>
-              <dd id="turn-id-value">--</dd>
-            </div>
-            <div>
-              <dt>Log Path</dt>
-              <dd id="log-path-value">--</dd>
-            </div>
-            <div>
-              <dt>Views</dt>
-              <dd id="available-views-value">--</dd>
-            </div>
-            <div>
-              <dt>Raw Calls</dt>
-              <dd id="raw-calls-value">--</dd>
-            </div>
-            <div>
-              <dt>Accepted Actions</dt>
-              <dd id="accepted-actions-value">--</dd>
-            </div>
-            <div>
-              <dt>Plan Finish</dt>
-              <dd id="plan-finish-value">--</dd>
-            </div>
-            <div>
-              <dt>Narration Finish</dt>
-              <dd id="narration-finish-value">--</dd>
-            </div>
-            <div>
-              <dt>Plan Usage</dt>
-              <dd id="plan-usage-value">--</dd>
-            </div>
-            <div>
-              <dt>Narration Usage</dt>
-              <dd id="narration-usage-value">--</dd>
-            </div>
-            <div>
-              <dt>Plan Preview</dt>
-              <dd id="plan-preview-value">--</dd>
-            </div>
-            <div>
-              <dt>Narration Preview</dt>
-              <dd id="narration-preview-value">--</dd>
-            </div>
-          </dl>
-        </section>
-      </main>
+    <!-- BOTTOM BAR: collapsible secondary panels -->
+    <div class="bottom-bar">
+      <details class="collapsible">
+        <summary>Tool Trace</summary>
+        <ul id="tool-trace-list" class="trace-list empty-state">
+          <li>No actions yet.</li>
+        </ul>
+      </details>
+      <details class="collapsible">
+        <summary>Session Info</summary>
+        <div class="session-info-grid">
+          <span class="hud-label">Summary</span>
+          <span id="summary-value">Waiting for mission start.</span>
+        </div>
+      </details>
     </div>
 
-    <script src="/static/app.js"></script>
-  </body>
+  </div><!-- end app-shell -->
+
+  <script src="/static/app.js"></script>
+</body>
 </html>

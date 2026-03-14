@@ -38,6 +38,7 @@ class GeminiBrain(Brain):
         self.fallback_brain = fallback_brain or MockBrain()
         self._last_plan_trace: dict[str, Any] | None = None
         self._last_narration_trace: dict[str, Any] | None = None
+        self._history: list[dict[str, Any]] = []  # conversational turns for multi-turn planning
 
     def plan(self, prompt: str, state: RobotState, mission_ctx: str) -> list[Action]:
         """Ask Gemini for tool calls and sanitize the result before dispatch."""
@@ -77,6 +78,7 @@ class GeminiBrain(Brain):
                 trace["fallback_used"] = False
                 trace["fallback_reason"] = None
                 self._last_plan_trace = trace
+                self._append_history(payload, response)
                 return actions
             return self._fallback_plan(
                 message="Gemini returned no valid tool calls.",
@@ -162,6 +164,11 @@ class GeminiBrain(Brain):
         self._last_narration_trace = None
         return trace
 
+    def reset_history(self) -> None:
+        """Clear conversational history (call between missions)."""
+
+        self._history = []
+
     def _build_plan_payload(self, prompt: str, state: RobotState, mission_ctx: str) -> dict[str, Any]:
         """Build the planning request payload for the Gemini REST API."""
 
@@ -170,7 +177,7 @@ class GeminiBrain(Brain):
                 "text": (
                     "Plan the next safe robot actions.\n"
                     "Return only function calls from the available tools.\n"
-                    "Use at most three actions.\n"
+                    "Use at most five actions.\n"
                     "If the user clearly asked for multiple compatible steps, complete the short sequence in one turn instead of stopping after the first safe action.\n"
                     "When the user asks to scan and then report what was detected, include both `scan()` and `report()` if they fit within the action limit.\n\n"
                     f"User prompt:\n{prompt}\n\n"
@@ -189,11 +196,14 @@ class GeminiBrain(Brain):
                 }
             )
 
+        contents: list[dict[str, Any]] = list(self._history)
+        contents.append({"role": "user", "parts": parts})
+
         return {
             "systemInstruction": {"parts": [{"text": GeminiConfig.SYSTEM_PROMPT}]},
-            "contents": [{"role": "user", "parts": parts}],
+            "contents": contents,
             "tools": [{"functionDeclarations": gemini_tool_declarations()}],
-            "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+            "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
             "generationConfig": {
                 "temperature": 0.1,
                 "maxOutputTokens": GeminiConfig.MAX_TOKENS,
@@ -240,6 +250,30 @@ class GeminiBrain(Brain):
                 "maxOutputTokens": GeminiConfig.MAX_TOKENS,
             },
         }
+
+    def _append_history(self, payload: dict[str, Any], response: dict[str, Any]) -> None:
+        """Save the last user turn and model response into the conversational history."""
+
+        # last user turn (without image to save tokens in future turns)
+        user_parts = []
+        for part in payload.get("contents", [{}])[-1].get("parts", []):
+            if "inlineData" not in part:
+                user_parts.append(part)
+        if user_parts:
+            self._history.append({"role": "user", "parts": user_parts})
+
+        # model turn: keep only function calls
+        model_parts = []
+        for candidate in response.get("candidates", []):
+            for part in candidate.get("content", {}).get("parts", []):
+                if "functionCall" in part:
+                    model_parts.append(part)
+        if model_parts:
+            self._history.append({"role": "model", "parts": model_parts})
+
+        # cap history to last 6 turns (3 exchanges) to avoid token bloat
+        if len(self._history) > 12:
+            self._history = self._history[-12:]
 
     def _request_with_retries(self, payload: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
         """Call the Gemini endpoint with simple retry handling."""
@@ -346,7 +380,7 @@ class GeminiBrain(Brain):
                 parsed_calls.append(parsed_entry)
                 if validation_error is None:
                     actions.append(action)
-        return actions[:3], parsed_calls
+        return actions[:5], parsed_calls
 
     def _extract_text(self, response: dict[str, Any]) -> str:
         """Extract plain text from a Gemini content response."""
@@ -415,7 +449,7 @@ class GeminiBrain(Brain):
     ) -> tuple[list[Action], list[dict[str, Any]]]:
         """Append obvious missing follow-up actions that the user explicitly requested."""
 
-        completed = list(actions[:3])
+        completed = list(actions[:5])
         repairs: list[dict[str, Any]] = []
         text = prompt.lower()
 
@@ -423,7 +457,7 @@ class GeminiBrain(Brain):
             return any(action.skill == skill for action in completed)
 
         def add_action(skill: str, params: dict[str, Any], reason: str) -> None:
-            if len(completed) >= 3 or has_action(skill):
+            if len(completed) >= 5 or has_action(skill):
                 return
             completed.append(Action(skill=skill, params=params))
             repairs.append(
@@ -443,7 +477,7 @@ class GeminiBrain(Brain):
                     "action": {"name": "stand", "params": {}},
                 }
             )
-            completed = completed[:3]
+            completed = completed[:5]
 
         if self._wants_scan(text):
             add_action("scan", {}, "Added requested scan action omitted by Gemini.")
@@ -451,7 +485,7 @@ class GeminiBrain(Brain):
         if self._wants_report(text):
             add_action("report", {}, "Added requested report action omitted by Gemini.")
 
-        return completed[:3], repairs
+        return completed[:5], repairs
 
     def _fallback_plan(
         self,

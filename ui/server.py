@@ -8,6 +8,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
 from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -200,6 +201,8 @@ async def _start_mission(websocket: WebSocket, session: SessionState, mission_id
     session.prompt_in_flight = False
     session.last_error = None
     _reset_runtime_debug(session)
+    if hasattr(session.brain, "reset_history"):
+        session.brain.reset_history()
     mission.start()
     session.robot_state = session.env.reset(mission_id)
     await _emit_views(websocket, session, session.robot_state)
