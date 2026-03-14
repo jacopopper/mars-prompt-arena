@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Mars Prompt Arena</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Mission Control</p>
+          <h1>Mars Prompt Arena</h1>
+          <p class="tagline">Guide CANIS-1 through prompt-driven exploration on Mars.</p>
+        </div>
+        <div class="connection-card">
+          <span id="connection-pill" class="pill pill-idle">Connecting</span>
+          <button id="reset-button" type="button" class="ghost-button">Reset Session</button>
+        </div>
+      </header>
+
+      <main class="main-grid">
+        <section class="panel control-panel">
+          <div class="panel-header">
+            <h2>Mission Select</h2>
+            <p>Pick a mission, then steer the robot with prompts.</p>
+          </div>
+          <div class="mission-buttons">
+            <button type="button" class="mission-button" data-mission-id="wake_up">Wake Up</button>
+            <button type="button" class="mission-button" data-mission-id="storm">Storm</button>
+            <button type="button" class="mission-button" data-mission-id="signal">Signal</button>
+          </div>
+
+          <div class="status-strip">
+            <span id="sim-mode-pill" class="pill">SIM: fake</span>
+            <span id="brain-mode-pill" class="pill">BRAIN: mock</span>
+            <span id="phase-pill" class="pill">PHASE: idle</span>
+          </div>
+
+          <form id="prompt-form" class="prompt-form">
+            <label for="prompt-input">Operator Prompt</label>
+            <textarea id="prompt-input" rows="4" placeholder="Stand up, scan the horizon, and head for the base."></textarea>
+            <button id="send-button" type="submit" class="primary-button">Send Prompt</button>
+          </form>
+
+          <div id="error-banner" class="error-banner hidden"></div>
+          <div id="summary-card" class="summary-card hidden"></div>
+        </section>
+
+        <section class="panel camera-panel">
+          <div class="panel-header">
+            <h2>Robot Camera</h2>
+            <p>Live frame stream from the active backend.</p>
+          </div>
+          <div class="camera-frame">
+            <img id="camera-image" alt="Robot camera feed">
+          </div>
+        </section>
+
+        <section class="panel hud-panel">
+          <div class="panel-header">
+            <h2>Mission HUD</h2>
+            <p id="mission-title">No mission active</p>
+          </div>
+          <dl class="hud-grid">
+            <div>
+              <dt>Status</dt>
+              <dd id="status-value">idle</dd>
+            </div>
+            <div>
+              <dt>Objective</dt>
+              <dd id="objective-value">Select a mission to begin.</dd>
+            </div>
+            <div>
+              <dt>Prompts</dt>
+              <dd id="prompts-value">0 / 0</dd>
+            </div>
+            <div>
+              <dt>Timer</dt>
+              <dd id="timer-value">--</dd>
+            </div>
+            <div>
+              <dt>Discoveries</dt>
+              <dd id="discoveries-value">0</dd>
+            </div>
+            <div>
+              <dt>Summary</dt>
+              <dd id="summary-value">Waiting for mission start.</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel trace-panel">
+          <div class="panel-header">
+            <h2>Tool Trace</h2>
+            <p>Validated actions planned for the current turn.</p>
+          </div>
+          <ul id="tool-trace-list" class="log-list empty-state">
+            <li>No actions planned yet.</li>
+          </ul>
+        </section>
+
+        <section class="panel narration-panel">
+          <div class="panel-header">
+            <h2>Narration Log</h2>
+            <p>CANIS-1 reports back here after every turn.</p>
+          </div>
+          <ul id="narration-list" class="log-list empty-state">
+            <li>No narration yet.</li>
+          </ul>
+        </section>
+
+        <section class="panel history-panel">
+          <div class="panel-header">
+            <h2>Prompt History</h2>
+            <p>The UI reflects backend truth, not client guesses.</p>
+          </div>
+          <ul id="history-list" class="log-list empty-state">
+            <li>No prompts submitted yet.</li>
+          </ul>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
