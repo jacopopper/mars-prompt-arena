@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from config import Action, ActionResult, RobotState
 
@@ -17,6 +18,16 @@ class Brain(ABC):
     @abstractmethod
     def narrate(self, results: list[ActionResult], state: RobotState) -> str:
         """Summarize the last turn in first-person narration."""
+
+    def consume_plan_trace(self) -> dict[str, Any] | None:
+        """Return and clear any provider-specific planning trace metadata."""
+
+        return None
+
+    def consume_narration_trace(self) -> dict[str, Any] | None:
+        """Return and clear any provider-specific narration trace metadata."""
+
+        return None
 
 
 class BrainError(RuntimeError):

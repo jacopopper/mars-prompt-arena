@@ -194,7 +194,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     ),
     "report": ToolSpec(
         name="report",
-        description="Describe the current forward-facing view.",
+        description="Summarize the current pose and any discovered targets.",
         arguments={},
     ),
 }

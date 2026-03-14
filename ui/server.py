@@ -8,6 +8,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -16,28 +17,32 @@ from fastapi.staticfiles import StaticFiles
 from agent.base import Brain, BrainError
 from agent.dispatcher import Dispatcher
 from agent.mock_brain import MockBrain
-from agent.tools import build_tool_trace
+from agent.tools import TOOL_SPECS, build_tool_trace
 from config import Action, MissionStatus, RobotState
 from missions.base import Mission, mission_from_id
 from sim.fake_env import FakeEnvironment
 from sim.mujoco_env import MujocoEnvironment
+from ui.turn_logging import TurnContext, TurnLogger
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 SUPPORTED_SIM_MODES = {"fake", "mujoco"}
 SUPPORTED_BRAIN_MODES = {"mock", "gemini"}
+IDLE_PREVIEW_MISSION_ID = "wake_up"
 
 
 @dataclass
 class SessionState:
     """Single in-memory session state shared by the browser connection."""
 
+    session_id: str
     env: Any
     brain: Brain
     dispatcher: Dispatcher
     sim_mode: str
     brain_mode: str
     robot_state: RobotState
+    turn_logger: TurnLogger
     mission: Mission | None = None
     mission_key: str | None = None
     phase: str = "idle"
@@ -46,6 +51,14 @@ class SessionState:
     latest_tool_trace: list[dict[str, Any]] = field(default_factory=list)
     prompt_history: list[dict[str, Any]] = field(default_factory=list)
     narration_log: list[str] = field(default_factory=list)
+    turn_counter: int = 0
+    latest_turn_id: int | None = None
+    latest_turn_log_path: str | None = None
+    last_planning_provider: str | None = None
+    last_narration_provider: str | None = None
+    last_fallback_reason: str | None = None
+    last_plan_retry_count: int = 0
+    last_narration_retry_count: int = 0
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -59,15 +72,21 @@ def create_app(sim_mode: str | None = None, brain_mode: str | None = None) -> Fa
         "mock",
     )
 
+    session_id = uuid4().hex[:12]
     env = _build_environment(resolved_sim_mode)
+    bootstrap_state = env.reset(IDLE_PREVIEW_MISSION_ID)
     brain, effective_brain_mode, startup_error = _build_brain(resolved_brain_mode)
+    turn_logger = TurnLogger(session_id=session_id)
     session = SessionState(
+        session_id=session_id,
         env=env,
         brain=brain,
         dispatcher=Dispatcher(),
         sim_mode=resolved_sim_mode,
         brain_mode=effective_brain_mode,
-        robot_state=env.current_state(),
+        robot_state=bootstrap_state,
+        turn_logger=turn_logger,
+        latest_turn_log_path=turn_logger.latest_path(),
         last_error=startup_error,
     )
 
@@ -81,6 +100,7 @@ def create_app(sim_mode: str | None = None, brain_mode: str | None = None) -> Fa
         return JSONResponse(
             {
                 "status": "ok",
+                "session_id": session.session_id,
                 "sim_mode": session.sim_mode,
                 "brain_mode": session.brain_mode,
                 "mission_id": session.mission_key,
@@ -165,6 +185,12 @@ async def _start_mission(websocket: WebSocket, session: SessionState, mission_id
     session.phase = "idle"
     session.prompt_in_flight = False
     session.last_error = None
+    session.latest_turn_id = None
+    session.last_planning_provider = None
+    session.last_narration_provider = None
+    session.last_fallback_reason = None
+    session.last_plan_retry_count = 0
+    session.last_narration_retry_count = 0
     mission.start()
     session.robot_state = session.env.reset(mission_id)
     await _emit_frame(websocket, session.robot_state.camera_frame)
@@ -181,7 +207,13 @@ async def _reset_session(websocket: WebSocket, session: SessionState) -> None:
         session.phase = "idle"
         session.prompt_in_flight = False
         session.last_error = None
-        session.robot_state = session.env.reset("wake_up")
+        session.latest_turn_id = None
+        session.last_planning_provider = None
+        session.last_narration_provider = None
+        session.last_fallback_reason = None
+        session.last_plan_retry_count = 0
+        session.last_narration_retry_count = 0
+        session.robot_state = session.env.reset(IDLE_PREVIEW_MISSION_ID)
         await _emit_snapshot(websocket, session)
         return
 
@@ -205,6 +237,11 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
             await _emit_mission_end(websocket, session)
         return
 
+    session.turn_counter += 1
+    turn_id = session.turn_counter
+    session.latest_turn_id = turn_id
+    context = _turn_context(session, turn_id)
+
     session.prompt_history.append(
         {
             "index": len(session.prompt_history) + 1,
@@ -219,7 +256,55 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
     terminal_reached = False
     try:
         mission_ctx = mission.mission_context(session.robot_state)
+        session.turn_logger.log(
+            "turn_started",
+            context,
+            prompt=prompt,
+            mission_context=mission_ctx,
+            state_summary=_state_summary(session.robot_state),
+            image_present=bool(session.robot_state.camera_frame),
+            image_bytes=len(session.robot_state.camera_frame),
+        )
+
+        if session.brain_mode == "gemini":
+            session.turn_logger.log(
+                "gemini_plan_request",
+                context,
+                prompt=prompt,
+                mission_context=mission_ctx,
+                state_summary=_state_summary(session.robot_state),
+                tool_names=sorted(TOOL_SPECS),
+                image_present=bool(session.robot_state.camera_frame),
+                image_bytes=len(session.robot_state.camera_frame),
+            )
+
         actions = await asyncio.to_thread(session.brain.plan, prompt, session.robot_state, mission_ctx)
+        plan_trace = session.brain.consume_plan_trace() or {
+            "provider": session.brain_mode,
+            "final_provider": session.brain_mode,
+            "fallback_used": False,
+            "fallback_reason": None,
+            "retry_count_used": 0,
+            "parsed_actions": build_tool_trace(actions),
+        }
+        _update_plan_provenance(session, plan_trace)
+        if session.brain_mode == "gemini" or plan_trace.get("provider") == "gemini":
+            session.turn_logger.log("gemini_plan_response", context, trace=plan_trace)
+        session.turn_logger.log(
+            "plan_parsed",
+            context,
+            provider=plan_trace.get("final_provider"),
+            parsed_actions=plan_trace.get("parsed_actions", build_tool_trace(actions)),
+            retry_count_used=plan_trace.get("retry_count_used", 0),
+        )
+        if plan_trace.get("fallback_used"):
+            session.turn_logger.log(
+                "plan_fallback",
+                context,
+                reason=plan_trace.get("fallback_reason"),
+                final_provider=plan_trace.get("final_provider"),
+                trace=plan_trace,
+            )
         if not actions:
             actions = [Action("report", {})]
 
@@ -228,10 +313,15 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
 
         session.phase = "acting"
         await _emit_state(websocket, session)
+        session.turn_logger.log(
+            "tool_dispatch_started",
+            context,
+            calls=session.latest_tool_trace,
+        )
 
         results = []
         latest_state = session.robot_state
-        for action in actions:
+        for index, action in enumerate(actions, start=1):
             result = session.dispatcher.execute(
                 action,
                 session.env,
@@ -240,24 +330,88 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
             results.append(result)
             latest_state = result.new_state
             session.robot_state = latest_state
+            session.turn_logger.log(
+                "tool_dispatch_result",
+                context,
+                action_index=index,
+                action={"name": action.skill, "params": dict(action.params)},
+                success=result.success,
+                message=result.message,
+                resulting_state=_state_summary(result.new_state),
+            )
             await _emit_frame(websocket, latest_state.camera_frame)
 
         session.phase = "reporting"
         await _emit_state(websocket, session)
 
+        if session.brain_mode == "gemini" or plan_trace.get("provider") == "gemini":
+            session.turn_logger.log(
+                "gemini_narration_request",
+                context,
+                results=[{"success": result.success, "message": result.message} for result in results],
+                state_summary=_state_summary(session.robot_state),
+                image_present=bool(session.robot_state.camera_frame),
+                image_bytes=len(session.robot_state.camera_frame),
+            )
+
         narration = await asyncio.to_thread(session.brain.narrate, results, session.robot_state)
+        narration_trace = session.brain.consume_narration_trace() or {
+            "provider": session.brain_mode,
+            "final_provider": session.brain_mode,
+            "fallback_used": False,
+            "fallback_reason": None,
+            "retry_count_used": 0,
+            "raw_text": narration,
+            "normalized_text": narration,
+            "style_normalized": False,
+        }
+        _update_narration_provenance(session, narration_trace)
+        if session.brain_mode == "gemini" or narration_trace.get("provider") == "gemini":
+            session.turn_logger.log("gemini_narration_response", context, trace=narration_trace)
+        if narration_trace.get("fallback_used"):
+            session.turn_logger.log(
+                "plan_fallback",
+                context,
+                stage="narration",
+                reason=narration_trace.get("fallback_reason"),
+                final_provider=narration_trace.get("final_provider"),
+                trace=narration_trace,
+            )
+
         session.narration_log.append(narration)
         await _emit_narration(websocket, narration)
 
         mission.after_turn(actions, results, session.robot_state, session.env)
         terminal_reached = mission.state.status in {MissionStatus.WIN, MissionStatus.FAIL}
+        session.turn_logger.log(
+            "turn_completed",
+            context,
+            outcome=mission.state.status.value,
+            summary=mission.summary_text(),
+            final_state=_state_summary(session.robot_state),
+            actions=session.latest_tool_trace,
+            narration=narration,
+        )
     except BrainError as error:
         session.last_error = str(error)
+        session.turn_logger.log(
+            "turn_failed",
+            context,
+            error_type=type(error).__name__,
+            error_message=str(error),
+        )
         await _emit_error(websocket, session, str(error))
     except Exception as error:
         session.last_error = f"Unexpected turn failure: {error}"
+        session.turn_logger.log(
+            "turn_failed",
+            context,
+            error_type=type(error).__name__,
+            error_message=session.last_error,
+        )
         await _emit_error(websocket, session, session.last_error)
     finally:
+        session.latest_turn_log_path = session.turn_logger.latest_path()
         session.prompt_in_flight = False
         if mission.state.status == MissionStatus.WIN:
             session.phase = "completed"
@@ -336,6 +490,7 @@ def _serialize_state(session: SessionState) -> dict[str, Any]:
     extra = mission_state.extra if mission_state is not None else {}
     return {
         "type": "mission_state",
+        "session_id": session.session_id,
         "mission_id": session.mission_key,
         "mission_label": extra.get("mission_label"),
         "objective": extra.get("objective"),
@@ -356,6 +511,13 @@ def _serialize_state(session: SessionState) -> dict[str, Any]:
         "narration_log": list(session.narration_log),
         "tool_trace": list(session.latest_tool_trace),
         "error": session.last_error,
+        "latest_turn_id": session.latest_turn_id,
+        "latest_turn_log_path": session.latest_turn_log_path,
+        "last_planning_provider": session.last_planning_provider,
+        "last_narration_provider": session.last_narration_provider,
+        "last_fallback_reason": session.last_fallback_reason,
+        "last_plan_retry_count": session.last_plan_retry_count,
+        "last_narration_retry_count": session.last_narration_retry_count,
     }
 
 
@@ -385,6 +547,47 @@ def _build_brain(requested_mode: str) -> tuple[Brain, str, str | None]:
         except Exception as error:
             return MockBrain(), "mock", f"Gemini unavailable, using mock brain: {error}"
     return MockBrain(), "mock", None
+
+
+def _turn_context(session: SessionState, turn_id: int | None) -> TurnContext:
+    """Build the structured turn context used by the JSONL logger."""
+
+    return TurnContext(
+        session_id=session.session_id,
+        turn_id=turn_id,
+        mission_id=session.mission_key,
+        sim_mode=session.sim_mode,
+        brain_mode=session.brain_mode,
+    )
+
+
+def _state_summary(state: RobotState) -> str:
+    """Convert a robot state into a compact structured log string."""
+
+    return (
+        f"position={state.position}, "
+        f"orientation={state.orientation:.1f}, "
+        f"battery={state.battery:.2f}, "
+        f"is_standing={state.is_standing}, "
+        f"contacts={state.contacts}"
+    )
+
+
+def _update_plan_provenance(session: SessionState, trace: dict[str, Any]) -> None:
+    """Project the latest planning trace into UI-facing session state."""
+
+    session.last_planning_provider = trace.get("final_provider") or trace.get("provider")
+    session.last_fallback_reason = trace.get("fallback_reason")
+    session.last_plan_retry_count = int(trace.get("retry_count_used", 0) or 0)
+
+
+def _update_narration_provenance(session: SessionState, trace: dict[str, Any]) -> None:
+    """Project the latest narration trace into UI-facing session state."""
+
+    session.last_narration_provider = trace.get("final_provider") or trace.get("provider")
+    if trace.get("fallback_reason"):
+        session.last_fallback_reason = trace.get("fallback_reason")
+    session.last_narration_retry_count = int(trace.get("retry_count_used", 0) or 0)
 
 
 app = create_app()

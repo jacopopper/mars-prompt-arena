@@ -1,6 +1,6 @@
 # Mars Prompt Arena — Team Workflow
 
-## Step 0: Agree on Contracts (30 min together)
+## Step 0: Agree on Contracts
 
 Everything in this section must be frozen before splitting.
 If these change mid-build, both tracks slow down.
@@ -37,9 +37,15 @@ class ActionResult:
 | `turn` | `angle_deg` | -180 to 180 |
 | `stand` | — | — |
 | `sit` | — | — |
-| `scan` | — | captures 360° view, returns description |
-| `navigate_to` | `target_id` | string ID of a known object |
-| `report` | — | describes current camera view |
+| `scan` | — | captures 360° view, returns description and `targets=[...]` when detections exist |
+| `navigate_to` | `target_id` | string ID of a discovered object |
+| `report` | — | summarizes current pose and any discovered targets |
+
+### Mission Reset Posture
+
+- `wake_up` starts sitting / non-standing
+- `storm` starts standing
+- `signal` starts standing
 
 ### WebSocket Events
 
@@ -69,6 +75,15 @@ class Environment:
     def execute(self, action: Action) -> ActionResult: ...
     def render(self) -> bytes: ...           # JPEG camera frame
 ```
+
+Optional helpers currently implemented by both backends:
+
+```python
+def get_distance_to(target_id: str) -> float | None: ...
+def set_visibility(factor: float) -> None: ...
+```
+
+`current_state()` is a local helper, not part of the frozen integration contract.
 
 **Brain** (Builder B implements)
 ```python
@@ -160,12 +175,18 @@ agent/brain.py
   → Gemini 2.5 Flash with function calling
   → plan(): prompt + base64 frame + state summary + tools → parse tool calls
   → narrate(): results → first-person narration as CANIS-1
+  → turn trace metadata for logs, retries, fallback provenance
   → switch via SIM_MODE / BRAIN_MODE env vars
 
 ui/server.py
   → FastAPI app
   → WebSocket handler implementing the turn pipeline above
   → session state: one active mission at a time
+  → structured JSONL turn logs under `logs/turns/`
+
+ui/turn_logging.py + scripts/inspect_turn_logs.py
+  → durable turn logs for prompt, plan, dispatch, narration, fallback
+  → CLI inspection for latest turn, latest failure, session, mission, provider
 
 ui/static/index.html + app.js + styles.css
   → mission selection screen
@@ -205,15 +226,13 @@ def dispatch(actions: list[Action], env: Environment) -> list[ActionResult]:
 
 ---
 
-## Timeline
+## Sequence
 
 ```
-Day 1 AM    Both     → freeze contracts (this doc), split
-Day 1       A        → fake_env.py + wake_up mission logic
-            B        → mock_brain + tools + UI skeleton live in browser
-Day 1 PM    Both     → dispatcher integration → first fake end-to-end prompt
-Day 2 AM    A        → mujoco_env.py baseline (stand + turn + walk)
-            B        → brain.py with real Gemini, CANIS-1 narration working
-Day 2 PM    Both     → Mission 2 (Storm) + Mission 3 (Signal)
-Day 3       Both     → polish, win/fail screens, demo recording
+1. Freeze contracts in this doc.
+2. Ship `fake_env.py` and `mock_brain.py` first.
+3. Integrate through `dispatcher.py`.
+4. Swap in `mujoco_env.py`.
+5. Swap in `brain.py`.
+6. Add mission polish, logging, and inspection tooling.
 ```

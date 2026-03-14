@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -103,3 +104,10 @@ You receive orders from mission control on Earth and execute them using your ava
 You always respond in first person, like an astronaut reporting back to base.
 Be concise. Describe what you see and what you are doing. Report obstacles and failures clearly.
 You can only interact with the world through your skills — do not invent actions."""
+
+
+class TurnLoggingConfig:
+    ENABLED      = os.getenv("TURN_LOGGING", "1").strip().lower() not in {"0", "false", "no"}
+    LOG_PAYLOADS = os.getenv("GEMINI_LOG_PAYLOADS", "0").strip().lower() in {"1", "true", "yes"}
+    LOG_IMAGES   = os.getenv("GEMINI_LOG_IMAGES", "0").strip().lower() in {"1", "true", "yes"}
+    ROOT_DIR     = Path(os.getenv("TURN_LOG_DIR", "logs/turns"))

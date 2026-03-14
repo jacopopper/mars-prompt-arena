@@ -42,7 +42,11 @@ TARGET_COLORS = {
 
 
 class FakeEnvironment:
+    """Deterministic 2D environment used for agent-loop development."""
+
     def __init__(self) -> None:
+        """Initialize the world state for the active mission."""
+
         self._x: float = 0.0
         self._y: float = 0.0
         self._yaw: float = 0.0        # degrees, 0 = east
@@ -50,19 +54,23 @@ class FakeEnvironment:
         self._targets: dict[str, tuple[float, float]] = {}
         self._scanned: set[str] = set()
         self._mission_id: str = ""
+        self._visibility: float = 1.0
 
     # ------------------------------------------------------------------
     # Public interface (matches mujoco_env.py)
     # ------------------------------------------------------------------
 
     def reset(self, mission_id: str) -> RobotState:
+        """Reset the environment state for a mission and return the first frame."""
+
         if mission_id not in SCENES:
             raise ValueError(f"Unknown mission_id: '{mission_id}'. Valid: {list(SCENES)}")
         self._x, self._y, self._yaw = 0.0, 0.0, 0.0
-        self._standing = False
+        self._standing = mission_id != "wake_up"
         self._scanned = set()
         self._mission_id = mission_id
         self._targets = dict(SCENES[mission_id])
+        self._visibility = 1.0
         return self._state()
 
     def execute(self, action: Action) -> ActionResult:
@@ -90,13 +98,22 @@ class FakeEnvironment:
         return self._draw_frame()
 
     def current_state(self) -> RobotState:
+        """Return the current robot state without advancing the environment."""
+
         return self._state()
 
     def get_distance_to(self, target_id: str) -> float | None:
+        """Return the current distance to a known target, if present."""
+
         if target_id not in self._targets:
             return None
         tx, ty = self._targets[target_id]
         return self._dist(tx, ty)
+
+    def set_visibility(self, factor: float) -> None:
+        """Apply a mission-specific visibility degradation factor."""
+
+        self._visibility = max(0.2, min(1.0, factor))
 
     # ------------------------------------------------------------------
     # Skills
@@ -140,11 +157,13 @@ class FakeEnvironment:
         if target_id not in self._scanned:
             return ActionResult(False, f"{target_id} not yet discovered. Use scan first.", self._state())
         tx, ty = self._targets[target_id]
-        dist = self._dist(tx, ty)
-        self._x = tx - 1.0 * math.cos(math.radians(self._yaw))
-        self._y = ty - 1.0 * math.sin(math.radians(self._yaw))
+        dx, dy = tx - self._x, ty - self._y
+        norm = math.sqrt(dx ** 2 + dy ** 2) + 1e-6
+        offset = max(0.0, MissionConfig.WIN_DISTANCE_METERS - 0.05)
+        self._x = tx - (dx / norm) * offset
+        self._y = ty - (dy / norm) * offset
         self._scanned.add(target_id)
-        return ActionResult(True, f"Navigated to {target_id} (was {dist:.1f}m away).", self._state())
+        return ActionResult(True, f"Navigated to {target_id}. Distance: {self._dist(tx, ty):.1f}m.", self._state())
 
     # ------------------------------------------------------------------
     # State and rendering
@@ -217,5 +236,8 @@ class FakeEnvironment:
                   fill=(100, 220, 100) if self._standing else (220, 100, 100))
 
         buf = io.BytesIO()
+        if self._visibility < 1.0:
+            haze = Image.new("RGB", (_W, _H), color=(180, 150, 120))
+            img = Image.blend(img, haze, 1.0 - self._visibility)
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()

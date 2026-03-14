@@ -63,6 +63,10 @@ class GeminiBrainTests(unittest.TestCase):
         with patch.object(brain, "_request_with_retries", return_value={"candidates": []}):
             actions = brain.plan("Stand up.", self.state, "ctx")
         self.assertEqual(actions[0].skill, "stand")
+        trace = brain.consume_plan_trace()
+        self.assertIsNotNone(trace)
+        self.assertTrue(trace["fallback_used"])
+        self.assertEqual(trace["final_provider"], "mock")
 
     def test_narration_extracts_text(self) -> None:
         """Narration responses should read back the model text."""
@@ -75,6 +79,20 @@ class GeminiBrainTests(unittest.TestCase):
         ):
             narration = brain.narrate([ActionResult(True, "moved", self.state)], self.state)
         self.assertEqual(narration, "I reached the shelter.")
+
+    def test_narration_is_normalized_to_first_person(self) -> None:
+        """Third-person or detached narration should be normalized locally."""
+
+        brain = GeminiBrain(api_key="test-key", allow_fallback=False)
+        with patch.object(
+            brain,
+            "_request_with_retries",
+            return_value={"candidates": [{"content": {"parts": [{"text": "Reached the shelter."}]}}]},
+        ):
+            narration = brain.narrate([ActionResult(True, "moved", self.state)], self.state)
+        self.assertEqual(narration, "I report: Reached the shelter.")
+        trace = brain.consume_narration_trace()
+        self.assertTrue(trace["style_normalized"])
 
     def test_plan_raises_without_fallback_on_transport_failure(self) -> None:
         """When fallback is disabled, transport failures should surface clearly."""

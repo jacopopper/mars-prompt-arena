@@ -82,6 +82,7 @@ mars-prompt-arena/
    e.g. "I can see a structure to the north. Moving closer."
        |
 9. Narration + new camera frame sent to UI via WebSocket
+   → turn logger persists prompt/plan/results/narration/fallback metadata
        |
 10. Mission checks win condition
     → if reached: mission complete
@@ -97,9 +98,9 @@ walk(direction, speed, duration)    # Move in a direction
 turn(angle_deg)                     # Rotate in place
 sit()                               # Sit down
 stand()                             # Stand up
-scan()                              # Capture 360° view, return description
+scan()                              # Capture 360° view, return description + targets=[...]
 navigate_to(target_id)              # Move toward a known object
-report()                            # Describe current camera view
+report()                            # Summarize current pose and discovered targets
 ```
 
 Gemini only knows these tools. The user's job is to phrase prompts

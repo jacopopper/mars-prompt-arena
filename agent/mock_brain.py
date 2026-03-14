@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from config import Action, ActionResult, RobotState
 from agent.base import Brain
 
 
 class MockBrain(Brain):
     """A boring but predictable planner used for local development."""
+
+    def __init__(self) -> None:
+        """Initialize empty trace containers for runtime inspection."""
+
+        self._last_plan_trace: dict[str, Any] | None = None
+        self._last_narration_trace: dict[str, Any] | None = None
 
     def plan(self, prompt: str, state: RobotState, mission_ctx: str) -> list[Action]:
         """Map obvious keywords to valid tool calls with conservative defaults."""
@@ -51,7 +59,19 @@ class MockBrain(Brain):
         if not actions:
             actions.append(Action("report", {}))
 
-        return actions[:3]
+        planned_actions = actions[:3]
+        self._last_plan_trace = {
+            "provider": "mock",
+            "final_provider": "mock",
+            "fallback_used": False,
+            "fallback_reason": None,
+            "retry_count_used": 0,
+            "parsed_actions": [
+                {"name": action.skill, "params": dict(action.params)}
+                for action in planned_actions
+            ],
+        }
+        return planned_actions
 
     def narrate(self, results: list[ActionResult], state: RobotState) -> str:
         """Summarize the last turn in plain first-person language."""
@@ -71,7 +91,32 @@ class MockBrain(Brain):
             sentences.extend(failed)
         if not successful and not failed:
             sentences.append("I have nothing new to report.")
-        return " ".join(sentences)
+        narration = " ".join(sentences)
+        self._last_narration_trace = {
+            "provider": "mock",
+            "final_provider": "mock",
+            "fallback_used": False,
+            "fallback_reason": None,
+            "retry_count_used": 0,
+            "raw_text": narration,
+            "normalized_text": narration,
+            "style_normalized": False,
+        }
+        return narration
+
+    def consume_plan_trace(self) -> dict[str, Any] | None:
+        """Return and clear the latest mock planning trace."""
+
+        trace = self._last_plan_trace
+        self._last_plan_trace = None
+        return trace
+
+    def consume_narration_trace(self) -> dict[str, Any] | None:
+        """Return and clear the latest mock narration trace."""
+
+        trace = self._last_narration_trace
+        self._last_narration_trace = None
+        return trace
 
     @staticmethod
     def _extract_target_id(text: str) -> str | None:

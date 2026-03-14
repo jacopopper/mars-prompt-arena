@@ -1,6 +1,8 @@
 import io
 import math
+import os
 
+os.environ.setdefault("MUJOCO_GL", "egl")
 import mujoco
 import numpy as np
 from PIL import Image
@@ -29,18 +31,25 @@ _STAND_QPOS = None
 
 
 class MujocoEnvironment:
+    """MuJoCo-backed environment that mirrors the fake-env contract."""
+
     def __init__(self) -> None:
+        """Create an empty environment ready for mission reset."""
+
         self._model: mujoco.MjModel | None = None
         self._data:  mujoco.MjData  | None = None
         self._renderer: mujoco.Renderer | None = None
         self._mission_id: str = ""
         self._scanned: set[str] = set()
+        self._visibility: float = 1.0
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
     def reset(self, mission_id: str) -> RobotState:
+        """Load the mission scene and return the initial robot state."""
+
         if mission_id not in SCENE_PATH:
             raise ValueError(f"Unknown mission_id: '{mission_id}'. Valid: {list(SCENE_PATH)}")
         if self._renderer is not None:
@@ -56,12 +65,16 @@ class MujocoEnvironment:
         )
         self._mission_id = mission_id
         self._scanned = set()
+        self._visibility = 1.0
 
         mujoco.mj_resetDataKeyframe(self._model, self._data, 0)
         # store standing joint targets for PD controller
         self._stand_qpos = self._data.qpos[7:19].copy()
         self._sit_qpos   = np.array([0.0, 1.4, -2.6] * 4)
-        self._target_qpos: np.ndarray = self._stand_qpos.copy()
+        if mission_id == "wake_up":
+            self._target_qpos = self._sit_qpos.copy()
+        else:
+            self._target_qpos = self._stand_qpos.copy()
         self._settle(steps=300)
         return self._state()
 
@@ -81,6 +94,8 @@ class MujocoEnvironment:
         return self._render_jpeg()
 
     def current_state(self) -> RobotState:
+        """Return the current robot state without executing an action."""
+
         if self._data is None:
             return RobotState(
                 position=(0.0, 0.0, 0.0),
@@ -93,11 +108,18 @@ class MujocoEnvironment:
         return self._state()
 
     def get_distance_to(self, target_id: str) -> float | None:
+        """Return the current distance to a mission target, if known."""
+
         targets = MISSION_TARGETS.get(self._mission_id, {})
         body_name = targets.get(target_id)
         if body_name is None:
             return None
         return self._dist_to_body(body_name)
+
+    def set_visibility(self, factor: float) -> None:
+        """Apply mission visibility degradation to the rendered frame."""
+
+        self._visibility = max(0.2, min(1.0, factor))
 
     def close(self) -> None:
         if self._renderer:
@@ -179,14 +201,12 @@ class MujocoEnvironment:
             return ActionResult(False, f"{target_id} not yet discovered. Use scan first.", self._state())
 
         body_name = targets[target_id]
-        dist_before = self._dist_to_body(body_name)
-
         # Teleport robot to 1.5m in front of target, preserving z and orientation
         tx, ty = self._body_pos_xy(body_name)
         rx, ry = float(self._data.qpos[0]), float(self._data.qpos[1])
         dx, dy = tx - rx, ty - ry
         norm = math.sqrt(dx**2 + dy**2) + 1e-6
-        offset = MissionConfig.WIN_DISTANCE_METERS
+        offset = max(0.0, MissionConfig.WIN_DISTANCE_METERS - 0.05)
         self._data.qpos[0] = tx - (dx / norm) * offset
         self._data.qpos[1] = ty - (dy / norm) * offset
         mujoco.mj_forward(self._model, self._data)
@@ -247,6 +267,9 @@ class MujocoEnvironment:
         self._renderer.update_scene(self._data, camera="robot_cam")
         frame = self._renderer.render()
         img = Image.fromarray(frame)
+        if self._visibility < 1.0:
+            haze = Image.new("RGB", img.size, color=(196, 168, 142))
+            img = Image.blend(img, haze, 1.0 - self._visibility)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()

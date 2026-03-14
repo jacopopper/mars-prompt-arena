@@ -1,117 +1,50 @@
-# Alignment Report — Builder A (Sim)
+# Builder B Alignment Review
 
-## What I have built and tested
+## Current Status
 
-### sim/fake_env.py ✅
-- `reset(mission_id: str)` — raises `ValueError` on unknown mission
-- `execute(action: Action) → ActionResult`
-- `render() → bytes` (JPEG)
-- Skills: walk, turn, stand, sit, scan, navigate_to, report
-- `report()` only reveals already-scanned targets
-- Tested and working
+Builder B is aligned with the current simulation contract and now exposes runtime provenance for planning and narration.
 
-### sim/mujoco_env.py ✅
-- Same public interface as fake_env
-- Go2 loaded from mujoco-menagerie
-- PD controller holds standing pose
-- walk accuracy: ~1.47m on 1.5m target (fixed timestep bug)
-- turn accuracy: ~90° on 90° target (fixed)
-- navigate_to: requires scan first, then teleports to target
-- Tested with MUJOCO_GL=egl
+Resolved items:
 
-### sim/scenes/go2/mission_{1,2,3}.xml ✅
-- Mars terrain, correct lighting
-- Mission objects: base_target, shelter_target, wreck_1/2/3
-- camera "robot_cam" attached to Go2 base body
+- the FastAPI app boots in both `fake` and `mujoco` modes
+- the websocket turn loop no longer reads MuJoCo state before `reset()`
+- Builder B tests no longer assume pre-scan navigation or the old standing reset posture
+- the frontend receives the active planning provider, narration provider, fallback reason, and retry counts
+- every prompt turn now leaves behind a structured JSONL trace
 
-### config.py ✅ (last known state)
-- `RobotState`, `Action`, `ActionResult` — frozen dataclasses
-- `MissionState.mission_id` — **string** ("wake_up" | "storm" | "signal")
-- `MissionConfig.PROMPT_BUDGET` — **string keys** ("wake_up": 7, etc.)
-- `SimConfig.SCENES` — string keys
-- `orientation` documented as 0 = east, CCW positive
+## Logging and Inspection
 
----
+Structured turn logging is implemented in:
 
-## Methods my envs expose
+- [ui/turn_logging.py](/home/jacopo/projects/mars-prompt-arena/ui/turn_logging.py)
+- [ui/server.py](/home/jacopo/projects/mars-prompt-arena/ui/server.py)
+- [agent/brain.py](/home/jacopo/projects/mars-prompt-arena/agent/brain.py)
 
-```python
-# Both FakeEnvironment and MujocoEnvironment expose:
-def reset(mission_id: str) -> RobotState
-def execute(action: Action) -> ActionResult
-def render() -> bytes
-```
+Inspection tooling is available in:
 
-## Methods I need to add before integration
+- [scripts/inspect_turn_logs.py](/home/jacopo/projects/mars-prompt-arena/scripts/inspect_turn_logs.py)
+- [docs/LOG_INSPECTION.md](/home/jacopo/projects/mars-prompt-arena/docs/LOG_INSPECTION.md)
 
-The server calls two methods that don't exist yet on my envs:
+## Frozen Runtime Behavior
 
-```python
-env.current_state() -> RobotState   # called in server.py line 70
-env.get_distance_to(target_id: str) -> float | None  # called in wake_up.py and storm.py
-```
+- Gemini planning is tool-constrained and capped at three actions
+- narration is post-execution and grounded in actual `ActionResult` messages
+- if Gemini fails, fallback provenance is recorded both in logs and in `mission_state`
+- narration is normalized locally if Gemini fails to answer in first person
 
-I will add these before we integrate. Not done yet.
+## Evidence
 
----
+- Gemini behavior and fallback logic are covered in [tests/test_gemini_brain.py](/home/jacopo/projects/mars-prompt-arena/tests/test_gemini_brain.py)
+- turn logging is covered in [tests/test_turn_logging.py](/home/jacopo/projects/mars-prompt-arena/tests/test_turn_logging.py)
+- end-to-end turn sequencing remains covered in [tests/test_server.py](/home/jacopo/projects/mars-prompt-arena/tests/test_server.py)
 
-## Scan message format
+## Remaining Caveats
 
-Current format:
-```
-"Scan complete. Detected: wreck_1 (5.9m, 31°), wreck_2 (7.6m, 113°)"
-"Scan complete. No targets detected in range."
-```
+- the UI surfaces provenance data, but deep inspection is still CLI-first
+- logs are session-scoped and local only; there is no remote aggregation
+- raw Gemini payloads stay redacted unless `GEMINI_LOG_PAYLOADS=1`
 
-**signal.py uses `extract_targets()` which parses `targets=[...]`.**
-My format does NOT include this. One of us needs to align.
+## Reference
 
-Options:
-- I add `targets=[wreck_1, wreck_2]` at the end of the scan message
-- signal.py parses my existing format instead
-
-Your call — tell me which you prefer.
-
----
-
-## Issues I found in Builder B's code
-
-### 1. `missions/base.py` — mission_id and PROMPT_BUDGET use int keys
-```python
-# base.py line 33-38 (current)
-mission_numeric_id = MISSION_KEYS[self.mission_key]   # returns 1/2/3
-MissionState(mission_id=mission_numeric_id, ...)       # int, not str
-MissionConfig.PROMPT_BUDGET[mission_numeric_id]        # KeyError — keys are now strings
-```
-Fix needed in `missions/base.py`: use `self.mission_key` (string) directly.
-
-### 2. `wake_up.py` and `storm.py` call `env.get_distance_to()`
-```python
-distance = getattr(env, "get_distance_to")("base")
-```
-Method doesn't exist on my envs yet. I will add it (see above).
-
-### 3. `storm.py` calls `env.set_visibility()`
-```python
-env.set_visibility(visibility)   # doesn't exist
-```
-Uses `hasattr` guard so won't crash, but visibility degradation won't work.
-I can add a `set_visibility(factor: float)` to both envs that applies a noise overlay to the camera frame. Let me know if you want this.
-
----
-
-## What I need from Builder B
-
-1. Fix `missions/base.py` to use string keys (not int) for mission_id and PROMPT_BUDGET
-2. Decide on scan message format (targets=[...] suffix or change signal.py parser)
-3. Let me know if you want me to implement `set_visibility()` for the Storm effect
-
----
-
-## Integration checklist
-
-- [ ] `env.current_state()` added to both envs (Builder A)
-- [ ] `env.get_distance_to()` added to both envs (Builder A)
-- [ ] `missions/base.py` string keys fixed (Builder B)
-- [ ] scan message format aligned (decision needed)
-- [ ] end-to-end test: `python main.py` → browser → start wake_up → send prompt
+- shared contract: [docs/TEAMWORK.md](/home/jacopo/projects/mars-prompt-arena/docs/TEAMWORK.md)
+- active execution checklist: [docs/ALIGNMENT_TODO.md](/home/jacopo/projects/mars-prompt-arena/docs/ALIGNMENT_TODO.md)

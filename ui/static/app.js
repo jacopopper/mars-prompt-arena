@@ -24,6 +24,11 @@ const state = {
     narration_log: [],
     tool_trace: [],
     error: null,
+    last_planning_provider: null,
+    last_narration_provider: null,
+    last_fallback_reason: null,
+    last_plan_retry_count: 0,
+    last_narration_retry_count: 0,
   },
 };
 
@@ -42,6 +47,10 @@ const elements = {
   promptsValue: document.querySelector("#prompts-value"),
   timerValue: document.querySelector("#timer-value"),
   discoveriesValue: document.querySelector("#discoveries-value"),
+  planProviderValue: document.querySelector("#plan-provider-value"),
+  narrationProviderValue: document.querySelector("#narration-provider-value"),
+  fallbackValue: document.querySelector("#fallback-value"),
+  retriesValue: document.querySelector("#retries-value"),
   summaryValue: document.querySelector("#summary-value"),
   toolTraceList: document.querySelector("#tool-trace-list"),
   narrationList: document.querySelector("#narration-list"),
@@ -156,6 +165,10 @@ function render() {
   elements.promptsValue.textContent = `${missionState.prompts_remaining} / ${missionState.prompts_budget}`;
   elements.timerValue.textContent = formatTimer(missionState.timer_seconds_remaining);
   elements.discoveriesValue.textContent = String(missionState.discovered_count || 0);
+  elements.planProviderValue.textContent = missionState.last_planning_provider || "--";
+  elements.narrationProviderValue.textContent = missionState.last_narration_provider || "--";
+  elements.fallbackValue.textContent = missionState.last_fallback_reason || "--";
+  elements.retriesValue.textContent = `${missionState.last_plan_retry_count || 0} / ${missionState.last_narration_retry_count || 0}`;
   elements.summaryValue.textContent = missionState.summary || "Waiting for mission start.";
 
   if (state.frameData) {
