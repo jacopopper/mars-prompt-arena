@@ -112,3 +112,8 @@ class TurnLoggingConfig:
     LOG_PAYLOADS = os.getenv("GEMINI_LOG_PAYLOADS", "0").strip().lower() in {"1", "true", "yes"}
     LOG_IMAGES   = os.getenv("GEMINI_LOG_IMAGES", "0").strip().lower() in {"1", "true", "yes"}
     ROOT_DIR     = Path(os.getenv("TURN_LOG_DIR", "logs/turns"))
+
+
+class LeaderboardConfig:
+    FILE_PATH   = Path(os.getenv("LEADERBOARD_FILE", "logs/leaderboards.json"))
+    MAX_ENTRIES = int(os.getenv("LEADERBOARD_MAX_ENTRIES", "10"))

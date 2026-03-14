@@ -19,10 +19,11 @@ from agent.base import Brain, BrainError
 from agent.dispatcher import Dispatcher
 from agent.mock_brain import MockBrain
 from agent.tools import TOOL_SPECS, build_tool_trace
-from config import Action, MissionStatus, RobotState
-from missions.base import Mission, mission_from_id
+from config import Action, LeaderboardConfig, MissionConfig, MissionStatus, RobotState
+from missions.base import MISSION_LABELS, Mission, mission_from_id, next_mission_id
 from sim.fake_env import FakeEnvironment
 from sim.mujoco_env import MujocoEnvironment
+from ui.leaderboard import LeaderboardStore
 from ui.turn_logging import TurnContext, TurnLogger
 
 
@@ -33,6 +34,13 @@ IDLE_PREVIEW_MISSION_ID = "wake_up"
 PRIMARY_VIEW = "robot_pov"
 SECONDARY_VIEW = "spectator_3d"
 VIEW_ORDER = (PRIMARY_VIEW, SECONDARY_VIEW)
+GOAL_LABELS = {
+    "base": "Base Habitat",
+    "shelter": "Storm Shelter",
+    "wreck_1": "Wreck Alpha",
+    "wreck_2": "Wreck Beta",
+    "wreck_3": "Wreck Gamma",
+}
 
 
 @dataclass
@@ -43,15 +51,19 @@ class SessionState:
     env: Any
     brain: Brain
     dispatcher: Dispatcher
+    leaderboard_store: LeaderboardStore
     sim_mode: str
     brain_mode: str
     robot_state: RobotState
     turn_logger: TurnLogger
     mission: Mission | None = None
     mission_key: str | None = None
+    player_name: str | None = None
     phase: str = "idle"
     prompt_in_flight: bool = False
     last_error: str | None = None
+    leaderboards: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    latest_mission_end: dict[str, Any] | None = None
     latest_tool_trace: list[dict[str, Any]] = field(default_factory=list)
     prompt_history: list[dict[str, Any]] = field(default_factory=list)
     narration_log: list[str] = field(default_factory=list)
@@ -75,7 +87,11 @@ class SessionState:
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
-def create_app(sim_mode: str | None = None, brain_mode: str | None = None) -> FastAPI:
+def create_app(
+    sim_mode: str | None = None,
+    brain_mode: str | None = None,
+    leaderboard_store: LeaderboardStore | None = None,
+) -> FastAPI:
     """Create the FastAPI application with a single shared session."""
 
     resolved_sim_mode = _resolve_mode(sim_mode or os.getenv("SIM_MODE", "fake"), SUPPORTED_SIM_MODES, "fake")
@@ -91,11 +107,16 @@ def create_app(sim_mode: str | None = None, brain_mode: str | None = None) -> Fa
     bootstrap_views = _collect_frame_views(env, bootstrap_state)
     brain, effective_brain_mode, startup_error = _build_brain(resolved_brain_mode)
     turn_logger = TurnLogger(session_id=session_id)
+    resolved_leaderboard_store = leaderboard_store or LeaderboardStore(
+        LeaderboardConfig.FILE_PATH,
+        LeaderboardConfig.MAX_ENTRIES,
+    )
     session = SessionState(
         session_id=session_id,
         env=env,
         brain=brain,
         dispatcher=Dispatcher(),
+        leaderboard_store=resolved_leaderboard_store,
         sim_mode=resolved_sim_mode,
         brain_mode=effective_brain_mode,
         robot_state=bootstrap_state,
@@ -103,6 +124,7 @@ def create_app(sim_mode: str | None = None, brain_mode: str | None = None) -> Fa
         latest_turn_log_path=turn_logger.latest_path(),
         available_views=list(bootstrap_views),
         last_error=startup_error,
+        leaderboards=resolved_leaderboard_store.snapshot(),
     )
 
     app = FastAPI(title="Mars Prompt Arena")
@@ -153,10 +175,24 @@ async def _handle_client_event(
     """Route client events to the appropriate session handlers."""
 
     event_type = message.get("type")
+    if event_type == "set_player_name":
+        await _set_player_name(websocket, session, message.get("player_name"))
+        return
+
     if event_type == "start_mission":
+        player_name = message.get("player_name")
+        if player_name is not None:
+            normalized_name, error = _normalize_player_name(player_name)
+            if error is not None:
+                await _emit_error(websocket, session, error)
+                return
+            session.player_name = normalized_name
         mission_id = message.get("mission_id")
         if not isinstance(mission_id, str):
             await _emit_error(websocket, session, "Missing or invalid mission_id.")
+            return
+        if session.player_name is None:
+            await _emit_error(websocket, session, "Set a player name before starting a mission.")
             return
         await _start_mission(websocket, session, mission_id)
         return
@@ -196,6 +232,18 @@ async def _handle_client_event(
     await _emit_error(websocket, session, f"Unsupported event type '{event_type}'.")
 
 
+async def _set_player_name(websocket: WebSocket, session: SessionState, raw_name: Any) -> None:
+    """Validate and store the current player name for leaderboard submissions."""
+
+    player_name, error = _normalize_player_name(raw_name)
+    if error is not None:
+        await _emit_error(websocket, session, error)
+        return
+    session.player_name = player_name
+    session.last_error = None
+    await _emit_state(websocket, session)
+
+
 async def _start_mission(websocket: WebSocket, session: SessionState, mission_id: str) -> None:
     """Start a mission and broadcast the initial state."""
 
@@ -213,6 +261,7 @@ async def _start_mission(websocket: WebSocket, session: SessionState, mission_id
     session.phase = "idle"
     session.prompt_in_flight = False
     session.last_error = None
+    session.latest_mission_end = None
     _reset_runtime_debug(session)
     if hasattr(session.brain, "reset_history"):
         session.brain.reset_history()
@@ -232,6 +281,7 @@ async def _reset_session(websocket: WebSocket, session: SessionState) -> None:
         session.phase = "idle"
         session.prompt_in_flight = False
         session.last_error = None
+        session.latest_mission_end = None
         _reset_runtime_debug(session)
         session.robot_state = session.env.reset(IDLE_PREVIEW_MISSION_ID)
         session.available_views = list(_collect_frame_views(session.env, session.robot_state))
@@ -253,6 +303,8 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
     if not allowed:
         session.phase = "failed" if mission.state.status == MissionStatus.FAIL else "idle"
         session.last_error = reason
+        if mission.state.status in {MissionStatus.WIN, MissionStatus.FAIL}:
+            _prepare_mission_end(session)
         await _emit_state(websocket, session)
         if mission.state.status == MissionStatus.FAIL:
             await _emit_mission_end(websocket, session)
@@ -272,6 +324,7 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
     session.prompt_in_flight = True
     session.phase = "thinking"
     session.last_error = None
+    session.latest_mission_end = None
     await _emit_state(websocket, session)
 
     terminal_reached = False
@@ -439,6 +492,8 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
             session.phase = "failed"
         else:
             session.phase = "idle"
+        if mission.state.status in {MissionStatus.WIN, MissionStatus.FAIL}:
+            _prepare_mission_end(session)
         await _emit_state(websocket, session)
         if terminal_reached:
             await _emit_mission_end(websocket, session)
@@ -493,16 +548,10 @@ async def _emit_state(websocket: WebSocket, session: SessionState) -> None:
 async def _emit_mission_end(websocket: WebSocket, session: SessionState) -> None:
     """Emit the current terminal mission result."""
 
-    mission = session.mission
-    if mission is None:
+    payload = _prepare_mission_end(session)
+    if payload is None:
         return
-    await websocket.send_json(
-        {
-            "type": "mission_end",
-            "status": mission.state.status.value,
-            "summary": mission.summary_text(),
-        }
-    )
+    await websocket.send_json(payload)
 
 
 async def _emit_error(websocket: WebSocket, session: SessionState, message: str) -> None:
@@ -518,9 +567,11 @@ def _serialize_state(session: SessionState) -> dict[str, Any]:
     mission = session.mission
     mission_state = mission.state if mission is not None else None
     extra = mission_state.extra if mission_state is not None else {}
+    goal = _build_goal_status(session)
     return {
         "type": "mission_state",
         "session_id": session.session_id,
+        "player_name": session.player_name,
         "mission_id": session.mission_key,
         "mission_label": extra.get("mission_label"),
         "objective": extra.get("objective"),
@@ -537,6 +588,17 @@ def _serialize_state(session: SessionState) -> dict[str, Any]:
         "warning": extra.get("warning"),
         "discovered_targets": extra.get("discovered_targets", []),
         "discovered_count": extra.get("discovered_count", 0),
+        "goal_target_id": goal.get("goal_target_id"),
+        "goal_target_label": goal.get("goal_target_label"),
+        "goal_distance_meters": goal.get("goal_distance_meters"),
+        "goal_threshold_meters": goal.get("goal_threshold_meters"),
+        "goal_reached": goal.get("goal_reached", False),
+        "win_flag_raised": goal.get("win_flag_raised", False),
+        "leaderboards": {
+            mission_id: [dict(row) for row in rows]
+            for mission_id, rows in session.leaderboards.items()
+        },
+        "latest_mission_end": dict(session.latest_mission_end) if session.latest_mission_end is not None else None,
         "prompt_history": list(session.prompt_history),
         "narration_log": list(session.narration_log),
         "tool_trace": list(session.latest_tool_trace),
@@ -588,6 +650,19 @@ def _build_brain(requested_mode: str) -> tuple[Brain, str, str | None]:
     return MockBrain(), "mock", None
 
 
+def _normalize_player_name(raw_name: Any) -> tuple[str | None, str | None]:
+    """Return a safe player name or a user-facing validation error."""
+
+    if not isinstance(raw_name, str):
+        return None, "Player name must be a non-empty string."
+    normalized = " ".join(raw_name.split())
+    if not normalized:
+        return None, "Enter a player name before starting a mission."
+    if len(normalized) > 24:
+        normalized = normalized[:24].rstrip()
+    return normalized, None
+
+
 def _turn_context(session: SessionState, turn_id: int | None) -> TurnContext:
     """Build the structured turn context used by the JSONL logger."""
 
@@ -610,6 +685,133 @@ def _state_summary(state: RobotState) -> str:
         f"is_standing={state.is_standing}, "
         f"contacts={state.contacts}"
     )
+
+
+def _build_goal_status(session: SessionState) -> dict[str, Any]:
+    """Expose mission-target proximity data to the frontend."""
+
+    mission = session.mission
+    if mission is None or session.mission_key is None:
+        return {
+            "goal_target_id": None,
+            "goal_target_label": None,
+            "goal_distance_meters": None,
+            "goal_threshold_meters": None,
+            "goal_reached": False,
+            "win_flag_raised": False,
+        }
+
+    mission_id = session.mission_key
+    goal_target_id: str | None = None
+    goal_threshold = MissionConfig.WIN_DISTANCE_METERS
+
+    if mission_id == "wake_up":
+        goal_target_id = "base"
+    elif mission_id == "storm":
+        goal_target_id = "shelter"
+    elif mission_id == "signal":
+        goal_threshold = MissionConfig.SCAN_DISTANCE_METERS
+        remaining = [
+            target_id
+            for target_id in ("wreck_1", "wreck_2", "wreck_3")
+            if target_id not in mission.state.scanned_objects
+        ]
+        if not remaining:
+            return {
+                "goal_target_id": None,
+                "goal_target_label": "All wrecks scanned",
+                "goal_distance_meters": 0.0,
+                "goal_threshold_meters": goal_threshold,
+                "goal_reached": True,
+                "win_flag_raised": mission.state.status == MissionStatus.WIN,
+            }
+        distances = []
+        for target_id in remaining:
+            distance = getattr(session.env, "get_distance_to")(target_id)
+            if distance is not None:
+                distances.append((target_id, float(distance)))
+        if distances:
+            goal_target_id, goal_distance = min(distances, key=lambda item: item[1])
+            return {
+                "goal_target_id": goal_target_id,
+                "goal_target_label": GOAL_LABELS.get(goal_target_id, goal_target_id),
+                "goal_distance_meters": round(goal_distance, 2),
+                "goal_threshold_meters": goal_threshold,
+                "goal_reached": goal_distance <= goal_threshold,
+                "win_flag_raised": mission.state.status == MissionStatus.WIN,
+            }
+        goal_target_id = remaining[0]
+
+    distance = None
+    if goal_target_id is not None:
+        distance = getattr(session.env, "get_distance_to")(goal_target_id)
+
+    return {
+        "goal_target_id": goal_target_id,
+        "goal_target_label": GOAL_LABELS.get(goal_target_id or "", goal_target_id),
+        "goal_distance_meters": round(float(distance), 2) if distance is not None else None,
+        "goal_threshold_meters": goal_threshold if goal_target_id is not None else None,
+        "goal_reached": distance is not None and float(distance) <= goal_threshold,
+        "win_flag_raised": mission.state.status == MissionStatus.WIN,
+    }
+
+
+def _prepare_mission_end(session: SessionState) -> dict[str, Any] | None:
+    """Build and cache the latest terminal mission payload."""
+
+    mission = session.mission
+    if mission is None or session.mission_key is None:
+        return None
+    if mission.state.status not in {MissionStatus.WIN, MissionStatus.FAIL}:
+        return None
+
+    elapsed_seconds = round(float(mission.state.elapsed_seconds), 1)
+    existing = session.latest_mission_end
+    if (
+        existing is not None
+        and existing.get("mission_id") == session.mission_key
+        and existing.get("status") == mission.state.status.value
+        and existing.get("elapsed_seconds") == elapsed_seconds
+        and existing.get("prompts_used") == mission.state.prompts_used
+    ):
+        return existing
+
+    leaderboard: list[dict[str, Any]] = session.leaderboard_store.top(session.mission_key)
+    leaderboard_rank: int | None = None
+    if mission.state.status == MissionStatus.WIN and session.player_name is not None:
+        leaderboard, leaderboard_rank = session.leaderboard_store.record_win(
+            session.mission_key,
+            session.player_name,
+            mission.state.elapsed_seconds,
+            mission.state.prompts_used,
+        )
+        session.leaderboards = session.leaderboard_store.snapshot()
+
+    next_id = next_mission_id(session.mission_key) if mission.state.status == MissionStatus.WIN else None
+    goal = _build_goal_status(session)
+    payload = {
+        "type": "mission_end",
+        "status": mission.state.status.value,
+        "player_name": session.player_name,
+        "mission_id": session.mission_key,
+        "mission_label": MISSION_LABELS[session.mission_key],
+        "summary": mission.summary_text(),
+        "elapsed_seconds": elapsed_seconds,
+        "prompts_used": mission.state.prompts_used,
+        "prompts_budget": mission.state.prompts_budget,
+        "prompts_remaining": mission.prompts_remaining(),
+        "next_mission_id": next_id,
+        "next_mission_label": MISSION_LABELS.get(next_id) if next_id is not None else None,
+        "leaderboard": leaderboard,
+        "leaderboard_rank": leaderboard_rank,
+        "goal_target_label": goal.get("goal_target_label"),
+        "goal_distance_meters": goal.get("goal_distance_meters"),
+        "goal_threshold_meters": goal.get("goal_threshold_meters"),
+        "win_flag_raised": mission.state.status == MissionStatus.WIN,
+    }
+    session.latest_mission_end = payload
+    session.leaderboards = session.leaderboard_store.snapshot()
+    return payload
 
 
 def _update_plan_provenance(session: SessionState, trace: dict[str, Any]) -> None:

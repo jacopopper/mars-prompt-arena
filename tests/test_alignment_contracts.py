@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import unittest
 
+import mujoco
+
 from config import Action, MissionConfig
 from sim.fake_env import FakeEnvironment
 from sim.mujoco_env import MujocoEnvironment
@@ -68,6 +70,38 @@ class BackendContractTests(unittest.TestCase):
             finally:
                 self._close_env(env)
 
+    def test_signal_reaching_a_wreck_activates_the_beacon(self) -> None:
+        """Reaching a signal target should surface an activated beacon state."""
+
+        for env in self._build_envs():
+            try:
+                env.reset("signal")
+                env.execute(Action("scan", {}))
+                env.execute(Action("navigate_to", {"target_id": "wreck_1"}))
+                report = env.execute(Action("report", {}))
+                self.assertTrue(report.success)
+                self.assertIn("Activated beacons: wreck_1", report.message)
+            finally:
+                self._close_env(env)
+
+    def test_mujoco_signal_beacon_geom_changes_color_when_reached(self) -> None:
+        """The MuJoCo wreck beacon should turn green once the target is reached."""
+
+        env = MujocoEnvironment()
+        try:
+            env.reset("signal")
+            env.execute(Action("scan", {}))
+            env.execute(Action("navigate_to", {"target_id": "wreck_1"}))
+
+            geom_id = mujoco.mj_name2id(env._model, mujoco.mjtObj.mjOBJ_GEOM, "wreck_1_beacon")
+            rgba = env._model.geom_rgba[geom_id, :3]
+
+            self.assertGreater(rgba[1], 0.9)
+            self.assertLess(rgba[0], 0.3)
+            self.assertGreater(rgba[2], 0.4)
+        finally:
+            self._close_env(env)
+
     def test_wake_up_sequence_reaches_base_in_both_backends(self) -> None:
         """The same deterministic Wake Up action sequence should work everywhere."""
 
@@ -83,6 +117,21 @@ class BackendContractTests(unittest.TestCase):
                 for action in actions:
                     result = env.execute(action)
                     self.assertTrue(result.success, msg=f"{type(env).__name__} failed on {action.skill}: {result.message}")
+                self.assertLessEqual(
+                    env.get_distance_to("base"),
+                    MissionConfig.WIN_DISTANCE_METERS,
+                )
+            finally:
+                self._close_env(env)
+
+    def test_wake_up_front_of_structure_counts_as_arrival(self) -> None:
+        """Walking up to the visible base structure should already satisfy the win radius."""
+
+        for env in self._build_envs():
+            try:
+                env.reset("wake_up")
+                env.execute(Action("stand", {}))
+                env.execute(Action("walk", {"direction": "forward", "speed": 1.0, "duration": 8.0}))
                 self.assertLessEqual(
                     env.get_distance_to("base"),
                     MissionConfig.WIN_DISTANCE_METERS,

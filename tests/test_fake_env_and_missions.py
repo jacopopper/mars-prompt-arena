@@ -26,6 +26,18 @@ class FakeEnvironmentTests(unittest.TestCase):
         self.assertNotEqual(result.new_state.position, (0.0, 0.0, 0.0))
         self.assertGreater(len(result.new_state.camera_frame), 100)
 
+    def test_spectator_camera_controls_change_rendered_view(self) -> None:
+        """Updating fake spectator camera params should produce a different frame."""
+
+        env = FakeEnvironment()
+        env.reset("wake_up")
+        initial_frame = env.render_views()["spectator_3d"]
+
+        env.set_camera_params(azimuth=245.0, elevation=-12.0, distance=3.0)
+        updated_frame = env.render_views()["spectator_3d"]
+
+        self.assertNotEqual(initial_frame, updated_frame)
+
 
 class MissionTests(unittest.TestCase):
     """Verify mission budget, success, and discovery flows."""

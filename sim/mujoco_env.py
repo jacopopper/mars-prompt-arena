@@ -26,6 +26,25 @@ MISSION_TARGETS = {
     "signal":  {"wreck_1":  "wreck_1", "wreck_2": "wreck_2", "wreck_3": "wreck_3"},
 }
 
+TARGET_FOOTPRINTS = {
+    "wake_up": {
+        "base": ((10.0, 0.0), (1.3, 1.2)),
+    },
+    "storm": {
+        "shelter": ((8.0, 5.0), (1.5, 1.5)),
+    },
+}
+
+SIGNAL_BEACON_GEOMS = {
+    "wreck_1": "wreck_1_beacon",
+    "wreck_2": "wreck_2_beacon",
+    "wreck_3": "wreck_3_beacon",
+}
+
+BEACON_DEFAULT_RGBA = np.array([1.0, 0.3, 0.1, 1.0], dtype=float)
+BEACON_SCANNED_RGBA = np.array([1.0, 0.82, 0.22, 1.0], dtype=float)
+BEACON_REACHED_RGBA = np.array([0.2, 1.0, 0.45, 1.0], dtype=float)
+
 # Standing joint configuration (from keyframe 0)
 _STAND_QPOS = None
 
@@ -41,6 +60,7 @@ class MujocoEnvironment:
         self._renderer: mujoco.Renderer | None = None
         self._mission_id: str = ""
         self._scanned: set[str] = set()
+        self._reached: set[str] = set()
         self._visibility: float = 1.0
         self._cam_azimuth: float = 200.0
         self._cam_elevation: float = -25.0
@@ -72,6 +92,7 @@ class MujocoEnvironment:
         )
         self._mission_id = mission_id
         self._scanned = set()
+        self._reached = set()
         self._visibility = 1.0
 
         mujoco.mj_resetDataKeyframe(self._model, self._data, 0)
@@ -83,6 +104,7 @@ class MujocoEnvironment:
         else:
             self._target_qpos = self._stand_qpos.copy()
         self._settle(steps=300)
+        self._sync_signal_beacons()
         return self._state()
 
     def execute(self, action: Action) -> ActionResult:
@@ -98,9 +120,11 @@ class MujocoEnvironment:
                 return ActionResult(False, f"Unknown skill: {action.skill}", self._state())
 
     def render(self) -> bytes:
+        self._refresh_signal_reached_targets()
         return self._render_spectator_jpeg()
 
     def render_views(self) -> dict[str, bytes]:
+        self._refresh_signal_reached_targets()
         return {
             "spectator_3d": self._render_spectator_jpeg(),
         }
@@ -122,11 +146,12 @@ class MujocoEnvironment:
     def get_distance_to(self, target_id: str) -> float | None:
         """Return the current distance to a mission target, if known."""
 
-        targets = MISSION_TARGETS.get(self._mission_id, {})
-        body_name = targets.get(target_id)
-        if body_name is None:
+        target_pos = self._target_reference_point(target_id)
+        if target_pos is None:
             return None
-        return self._dist_to_body(body_name)
+        tx, ty = target_pos
+        rx, ry = float(self._data.qpos[0]), float(self._data.qpos[1])
+        return math.sqrt((rx - tx) ** 2 + (ry - ty) ** 2)
 
     def set_camera_params(
         self,
@@ -212,6 +237,7 @@ class MujocoEnvironment:
             y=float(self._data.qpos[1]) + dy_world,
         )
         self._settle(40)
+        self._refresh_signal_reached_targets()
         return ActionResult(True, f"Walked {direction} ~{speed * duration:.1f}m.", self._state())
 
     def _turn(self, angle_deg: float = 0.0) -> ActionResult:
@@ -220,19 +246,22 @@ class MujocoEnvironment:
         next_yaw = self._yaw() + math.radians(angle_deg)
         self._set_planar_pose(yaw=next_yaw)
         self._settle(40)
+        self._refresh_signal_reached_targets()
         return ActionResult(True, f"Turned {angle_deg:+.0f}°.", self._state())
 
     def _scan(self) -> ActionResult:
         targets = MISSION_TARGETS.get(self._mission_id, {})
         found = []
         found_ids = []
-        for name, body_name in targets.items():
-            dist = self._dist_to_body(body_name)
+        for name in targets:
+            dist = self.get_distance_to(name)
             if dist is not None and dist < MissionConfig.SCAN_DISTANCE_METERS * 4:
-                bearing = self._bearing_to_body(body_name)
+                bearing = self._bearing_to_target(name)
                 found.append(f"{name} ({dist:.1f}m, {bearing:.0f}°)")
                 found_ids.append(name)
                 self._scanned.add(name)
+        self._sync_signal_beacons()
+        self._refresh_signal_reached_targets()
         if found:
             msg = "Scan complete. Detected: " + ", ".join(found) + f" targets=[{', '.join(found_ids)}]"
         else:
@@ -247,19 +276,19 @@ class MujocoEnvironment:
             return ActionResult(False, f"{target_id} not yet discovered. Use scan first.", self._state())
 
         body_name = targets[target_id]
-        # Teleport robot to 1.5m in front of target, preserving z and orientation
-        tx, ty = self._body_pos_xy(body_name)
+        tx, ty = self._target_reference_point(target_id) or self._body_pos_xy(body_name)
         rx, ry = float(self._data.qpos[0]), float(self._data.qpos[1])
         dx, dy = tx - rx, ty - ry
         norm = math.sqrt(dx**2 + dy**2) + 1e-6
-        offset = max(0.0, MissionConfig.WIN_DISTANCE_METERS - 0.05)
+        offset = min(0.5, max(0.0, MissionConfig.WIN_DISTANCE_METERS - 0.05))
         self._set_planar_pose(
             x=tx - (dx / norm) * offset,
             y=ty - (dy / norm) * offset,
         )
         self._settle(100)
+        self._refresh_signal_reached_targets()
 
-        final_dist = self._dist_to_body(body_name)
+        final_dist = self.get_distance_to(target_id)
         return ActionResult(True, f"Navigated to {target_id}. Distance: {final_dist:.1f}m.", self._state())
 
     # ------------------------------------------------------------------
@@ -335,6 +364,67 @@ class MujocoEnvironment:
         rx, ry = float(self._data.qpos[0]), float(self._data.qpos[1])
         return math.degrees(math.atan2(ty - ry, tx - rx)) % 360
 
+    def _target_reference_point(self, target_id: str) -> tuple[float, float] | None:
+        """Return the nearest visible arrival point for the given target."""
+
+        targets = MISSION_TARGETS.get(self._mission_id, {})
+        if target_id not in targets:
+            return None
+
+        footprint = TARGET_FOOTPRINTS.get(self._mission_id, {}).get(target_id)
+        if footprint is not None:
+            (cx, cy), (half_x, half_y) = footprint
+            rx, ry = float(self._data.qpos[0]), float(self._data.qpos[1])
+            return (
+                min(max(rx, cx - half_x), cx + half_x),
+                min(max(ry, cy - half_y), cy + half_y),
+            )
+
+        return self._body_pos_xy(targets[target_id])
+
+    def _bearing_to_target(self, target_id: str) -> float:
+        """Return the bearing to the current target arrival point."""
+
+        target_pos = self._target_reference_point(target_id)
+        if target_pos is None:
+            return 0.0
+        tx, ty = target_pos
+        rx, ry = float(self._data.qpos[0]), float(self._data.qpos[1])
+        return math.degrees(math.atan2(ty - ry, tx - rx)) % 360
+
+    def _refresh_signal_reached_targets(self) -> None:
+        """Activate a signal beacon once the robot enters its reach radius."""
+
+        if self._mission_id != "signal":
+            return
+        changed = False
+        for target_id in SIGNAL_BEACON_GEOMS:
+            distance = self.get_distance_to(target_id)
+            if distance is not None and distance <= MissionConfig.WIN_DISTANCE_METERS and target_id not in self._reached:
+                self._reached.add(target_id)
+                changed = True
+        if changed:
+            self._sync_signal_beacons()
+
+    def _sync_signal_beacons(self) -> None:
+        """Apply the current signal beacon colors to the MuJoCo scene."""
+
+        if self._mission_id != "signal" or self._model is None:
+            return
+        for target_id, geom_name in SIGNAL_BEACON_GEOMS.items():
+            geom_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+            if geom_id < 0:
+                continue
+            if target_id in self._reached:
+                rgba = BEACON_REACHED_RGBA
+            elif target_id in self._scanned:
+                rgba = BEACON_SCANNED_RGBA
+            else:
+                rgba = BEACON_DEFAULT_RGBA
+            self._model.geom_rgba[geom_id, :4] = rgba
+        if self._data is not None:
+            mujoco.mj_forward(self._model, self._data)
+
     def _render_spectator_jpeg(self) -> bytes:
         cam = mujoco.MjvCamera()
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
@@ -357,21 +447,24 @@ class MujocoEnvironment:
         return buf.getvalue()
 
     def _describe(self) -> str:
+        self._refresh_signal_reached_targets()
         x, y = float(self._data.qpos[0]), float(self._data.qpos[1])
         yaw_deg = math.degrees(self._yaw())
         parts = [f"Position ({x:.1f}, {y:.1f}), facing {yaw_deg:.0f}°."]
         if self._scanned:
             for name in self._scanned:
-                body_name = MISSION_TARGETS.get(self._mission_id, {}).get(name)
-                if body_name:
-                    dist = self._dist_to_body(body_name)
-                    bearing = self._bearing_to_body(body_name)
+                if name in MISSION_TARGETS.get(self._mission_id, {}):
+                    dist = self.get_distance_to(name)
+                    bearing = self._bearing_to_target(name)
                     parts.append(f"{name}: {dist:.1f}m at {bearing:.0f}°")
         else:
             parts.append("No targets discovered yet. Use scan to search the area.")
+        if self._reached:
+            parts.append("Activated beacons: " + ", ".join(sorted(self._reached)))
         return " ".join(parts)
 
     def _state(self) -> RobotState:
+        self._refresh_signal_reached_targets()
         x  = float(self._data.qpos[0])
         y  = float(self._data.qpos[1])
         z  = float(self._data.qpos[2])

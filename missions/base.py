@@ -20,6 +20,8 @@ MISSION_LABELS = {
     "signal": "Signal",
 }
 
+MISSION_SEQUENCE = ("wake_up", "storm", "signal")
+
 
 class Mission(ABC):
     """Base mission implementation with prompt budget and summary helpers."""
@@ -221,3 +223,16 @@ def mission_from_id(mission_id: str) -> Mission:
         return factories[mission_id]()
     except KeyError as error:
         raise ValueError(f"Unsupported mission '{mission_id}'.") from error
+
+
+def next_mission_id(mission_id: str) -> str | None:
+    """Return the next mission in the campaign order, if any."""
+
+    try:
+        index = MISSION_SEQUENCE.index(mission_id)
+    except ValueError:
+        return None
+    next_index = index + 1
+    if next_index >= len(MISSION_SEQUENCE):
+        return None
+    return MISSION_SEQUENCE[next_index]

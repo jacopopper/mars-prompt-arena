@@ -2,12 +2,45 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from config import Action
+from ui.leaderboard import LeaderboardStore
 from ui.server import create_app
+
+
+class WinningBrain:
+    """Deterministic test brain that can finish Wake Up in one turn."""
+
+    def plan(self, prompt, state, mission_ctx):
+        """Return a known-good action sequence for the tutorial mission."""
+
+        return [
+            Action("stand", {}),
+            Action("walk", {"direction": "forward", "speed": 1.0, "duration": 5.0}),
+            Action("scan", {}),
+            Action("navigate_to", {"target_id": "base"}),
+        ]
+
+    def narrate(self, results, state):
+        """Return a short narration for the completed turn."""
+
+        return "I reached the base habitat."
+
+    def consume_plan_trace(self):
+        """Expose no special trace metadata for this test double."""
+
+        return None
+
+    def consume_narration_trace(self):
+        """Expose no special trace metadata for this test double."""
+
+        return None
 
 
 class ServerTests(unittest.TestCase):
@@ -16,7 +49,10 @@ class ServerTests(unittest.TestCase):
     def setUp(self) -> None:
         """Create a fresh test client for each test."""
 
-        self.client = TestClient(create_app(sim_mode="fake", brain_mode="mock"))
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        leaderboard_store = LeaderboardStore(Path(self.temp_dir.name) / "leaderboards.json")
+        self.client = TestClient(create_app(sim_mode="fake", brain_mode="mock", leaderboard_store=leaderboard_store))
 
     def _receive_until(self, websocket, predicate, *, limit: int = 20) -> list[dict]:
         """Collect websocket events until a caller-provided predicate matches."""
@@ -66,6 +102,12 @@ class ServerTests(unittest.TestCase):
             self.assertEqual([event["view"] for event in frame_events], ["robot_pov", "spectator_3d"])
             self.assertEqual(initial_events[-1]["type"], "mission_state")
 
+            websocket.send_json({"type": "set_player_name", "player_name": "Pilot"})
+            self._receive_until(
+                websocket,
+                lambda payload, _: payload["type"] == "mission_state" and payload["player_name"] == "Pilot",
+            )
+
             websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
             mission_events = self._receive_until(
                 websocket,
@@ -101,6 +143,11 @@ class ServerTests(unittest.TestCase):
 
         with self.client.websocket_connect("/ws") as websocket:
             self._receive_until(websocket, lambda payload, _: payload["type"] == "mission_state")
+            websocket.send_json({"type": "set_player_name", "player_name": "Pilot"})
+            self._receive_until(
+                websocket,
+                lambda payload, _: payload["type"] == "mission_state" and payload["player_name"] == "Pilot",
+            )
             websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
             self._receive_until(
                 websocket,
@@ -131,6 +178,11 @@ class ServerTests(unittest.TestCase):
 
         with self.client.websocket_connect("/ws") as websocket:
             self._receive_until(websocket, lambda payload, _: payload["type"] == "mission_state")
+            websocket.send_json({"type": "set_player_name", "player_name": "Pilot"})
+            self._receive_until(
+                websocket,
+                lambda payload, _: payload["type"] == "mission_state" and payload["player_name"] == "Pilot",
+            )
             websocket.send_json({"type": "start_mission", "mission_id": "storm"})
             events = self._receive_until(
                 websocket,
@@ -162,3 +214,106 @@ class ServerTests(unittest.TestCase):
 
         frame_views = [event["view"] for event in events if event["type"] == "frame"]
         self.assertEqual(frame_views, ["robot_pov", "spectator_3d"])
+
+    def test_camera_control_re_emits_updated_frames(self) -> None:
+        """Camera controls should refresh the available frame views."""
+
+        client = TestClient(create_app(sim_mode="fake", brain_mode="mock"))
+        session = client.app.state.session
+        camera_calls: list[dict[str, float]] = []
+
+        def set_camera_params(*, azimuth=None, elevation=None, distance=None) -> None:
+            camera_calls.append(
+                {
+                    "azimuth": azimuth,
+                    "elevation": elevation,
+                    "distance": distance,
+                }
+            )
+
+        session.env.set_camera_params = set_camera_params  # type: ignore[attr-defined]
+        session.env.render_views = lambda: {  # type: ignore[attr-defined]
+            "robot_pov": b"robot-updated",
+            "spectator_3d": b"spectator-updated",
+        }
+
+        with client.websocket_connect("/ws") as websocket:
+            self._receive_until(
+                websocket,
+                lambda payload, _: payload["type"] == "mission_state",
+            )
+
+            websocket.send_json(
+                {
+                    "type": "camera_control",
+                    "azimuth": 214.0,
+                    "elevation": -31.0,
+                    "distance": 8.5,
+                }
+            )
+            events = self._receive_until(
+                websocket,
+                lambda _payload, seen: len([event for event in seen if event["type"] == "frame"]) == 2,
+                limit=5,
+            )
+
+        self.assertEqual(
+            camera_calls,
+            [
+                {
+                    "azimuth": 214.0,
+                    "elevation": -31.0,
+                    "distance": 8.5,
+                }
+            ],
+        )
+        frame_views = [event["view"] for event in events if event["type"] == "frame"]
+        self.assertEqual(frame_views, ["robot_pov", "spectator_3d"])
+
+    def test_start_mission_requires_player_name(self) -> None:
+        """Starting a mission without a player name should be rejected."""
+
+        with self.client.websocket_connect("/ws") as websocket:
+            self._receive_until(websocket, lambda payload, _: payload["type"] == "mission_state")
+            websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
+            events = self._receive_until(
+                websocket,
+                lambda payload, _: payload["type"] == "error",
+            )
+
+        self.assertEqual(events[-1]["message"], "Set a player name before starting a mission.")
+
+    def test_mission_end_reports_stats_and_leaderboard(self) -> None:
+        """Winning a mission should emit completion stats and store the leaderboard row."""
+
+        session = self.client.app.state.session
+        session.brain = WinningBrain()
+
+        with self.client.websocket_connect("/ws") as websocket:
+            self._receive_until(websocket, lambda payload, _: payload["type"] == "mission_state")
+            websocket.send_json({"type": "set_player_name", "player_name": "Pilot"})
+            self._receive_until(
+                websocket,
+                lambda payload, _: payload["type"] == "mission_state" and payload["player_name"] == "Pilot",
+            )
+            websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
+            self._receive_until(
+                websocket,
+                lambda payload, _: payload["type"] == "mission_state" and payload["mission_id"] == "wake_up",
+            )
+
+            websocket.send_json({"type": "submit_prompt", "prompt": "Reach the base habitat."})
+            events = self._receive_until(
+                websocket,
+                lambda payload, _: payload["type"] == "mission_end",
+                limit=40,
+            )
+
+        mission_end = events[-1]
+        self.assertEqual(mission_end["status"], "win")
+        self.assertEqual(mission_end["player_name"], "Pilot")
+        self.assertEqual(mission_end["mission_id"], "wake_up")
+        self.assertEqual(mission_end["prompts_used"], 1)
+        self.assertEqual(mission_end["next_mission_id"], "storm")
+        self.assertTrue(mission_end["win_flag_raised"])
+        self.assertEqual(mission_end["leaderboard"][0]["player_name"], "Pilot")

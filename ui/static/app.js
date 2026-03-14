@@ -1,9 +1,25 @@
 /* Mars Prompt Arena — operator console */
 
+const PLAYER_NAME_STORAGE_KEY = "mars_prompt_arena_player_name";
+const MISSION_LABELS = {
+  wake_up: "Wake Up",
+  storm: "Storm",
+  signal: "Signal",
+};
+
 const state = {
   connected: false,
-  frame: "",
+  frames: {
+    robot_pov: "",
+    spectator_3d: "",
+  },
+  selectedMissionId: "wake_up",
+  pendingMissionId: null,
+  playerModalOpen: false,
+  awaitingPlayerNameAck: false,
+  missionResult: null,
   mission: {
+    player_name: null,
     mission_id: null,
     mission_label: null,
     objective: null,
@@ -19,6 +35,13 @@ const state = {
     summary: null,
     warning: null,
     discovered_count: 0,
+    goal_target_label: null,
+    goal_distance_meters: null,
+    goal_threshold_meters: null,
+    goal_reached: false,
+    win_flag_raised: false,
+    latest_mission_end: null,
+    leaderboards: {},
     error: null,
     prompt_history: [],
     narration_log: [],
@@ -30,32 +53,50 @@ let socket = null;
 let reconnectTimeout = null;
 
 const el = {
-  connectionPill:    document.querySelector("#connection-pill"),
-  simPill:           document.querySelector("#sim-mode-pill"),
-  brainPill:         document.querySelector("#brain-mode-pill"),
-  resetButton:       document.querySelector("#reset-button"),
-  cameraImage:       document.querySelector("#camera-image"),
-  cameraPlaceholder: document.querySelector("#camera-placeholder"),
-  hudMissionLabel:   document.querySelector("#hud-mission-label"),
-  hudStatus:         document.querySelector("#hud-status"),
-  hudPhase:          document.querySelector("#hud-phase"),
-  hudPrompts:        document.querySelector("#hud-prompts"),
-  objectiveValue:    document.querySelector("#objective-value"),
-  promptsValue:      document.querySelector("#prompts-value"),
-  timerValue:        document.querySelector("#timer-value"),
-  discoveriesValue:  document.querySelector("#discoveries-value"),
-  errorBanner:       document.querySelector("#error-banner"),
-  conversationWrap:  document.querySelector("#conversation-wrap"),
-  conversationList:  document.querySelector("#conversation-list"),
-  promptForm:        document.querySelector("#prompt-form"),
-  promptInput:       document.querySelector("#prompt-input"),
-  sendButton:        document.querySelector("#send-button"),
-  toolTraceList:     document.querySelector("#tool-trace-list"),
-  summaryValue:      document.querySelector("#summary-value"),
-  missionButtons:    Array.from(document.querySelectorAll(".mission-button")),
+  connectionPill:        document.querySelector("#connection-pill"),
+  simPill:               document.querySelector("#sim-mode-pill"),
+  brainPill:             document.querySelector("#brain-mode-pill"),
+  playerNamePill:        document.querySelector("#player-name-pill"),
+  changePlayerButton:    document.querySelector("#change-player-button"),
+  resetButton:           document.querySelector("#reset-button"),
+  cameraImage:           document.querySelector("#camera-image"),
+  cameraPlaceholder:     document.querySelector("#camera-placeholder"),
+  hudMissionLabel:       document.querySelector("#hud-mission-label"),
+  hudStatus:             document.querySelector("#hud-status"),
+  hudPhase:              document.querySelector("#hud-phase"),
+  hudPrompts:            document.querySelector("#hud-prompts"),
+  objectiveValue:        document.querySelector("#objective-value"),
+  goalValue:             document.querySelector("#goal-value"),
+  promptsValue:          document.querySelector("#prompts-value"),
+  timerValue:            document.querySelector("#timer-value"),
+  discoveriesValue:      document.querySelector("#discoveries-value"),
+  leaderboardMission:    document.querySelector("#leaderboard-mission-label"),
+  leaderboardList:       document.querySelector("#leaderboard-list"),
+  errorBanner:           document.querySelector("#error-banner"),
+  conversationWrap:      document.querySelector("#conversation-wrap"),
+  conversationList:      document.querySelector("#conversation-list"),
+  promptForm:            document.querySelector("#prompt-form"),
+  promptInput:           document.querySelector("#prompt-input"),
+  sendButton:            document.querySelector("#send-button"),
+  toolTraceList:         document.querySelector("#tool-trace-list"),
+  summaryValue:          document.querySelector("#summary-value"),
+  missionButtons:        Array.from(document.querySelectorAll(".mission-button")),
+  playerModal:           document.querySelector("#player-modal"),
+  playerForm:            document.querySelector("#player-form"),
+  playerNameInput:       document.querySelector("#player-name-input"),
+  missionResultOverlay:  document.querySelector("#mission-result-overlay"),
+  resultFlag:            document.querySelector("#result-flag"),
+  resultMissionLabel:    document.querySelector("#result-mission-label"),
+  resultTitle:           document.querySelector("#result-title"),
+  resultSummary:         document.querySelector("#result-summary"),
+  resultTime:            document.querySelector("#result-time"),
+  resultPrompts:         document.querySelector("#result-prompts"),
+  resultRank:            document.querySelector("#result-rank"),
+  resultLeaderboardLabel: document.querySelector("#result-leaderboard-label"),
+  resultLeaderboardList: document.querySelector("#result-leaderboard-list"),
+  replayLevelButton:     document.querySelector("#replay-level-button"),
+  nextLevelButton:       document.querySelector("#next-level-button"),
 };
-
-// ── WebSocket ────────────────────────────────────────────
 
 function connect() {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -65,10 +106,19 @@ function connect() {
   socket.addEventListener("open", () => {
     state.connected = true;
     setConnection("connected");
+    const storedPlayerName = getStoredPlayerName();
+    if (storedPlayerName) {
+      state.awaitingPlayerNameAck = true;
+      send({ type: "set_player_name", player_name: storedPlayerName });
+      state.playerModalOpen = false;
+    } else {
+      state.awaitingPlayerNameAck = false;
+      state.playerModalOpen = true;
+    }
     render();
   });
 
-  socket.addEventListener("message", (e) => handleEvent(JSON.parse(e.data)));
+  socket.addEventListener("message", (event) => handleEvent(JSON.parse(event.data)));
 
   socket.addEventListener("close", () => {
     state.connected = false;
@@ -81,25 +131,47 @@ function connect() {
 function handleEvent(payload) {
   switch (payload.type) {
     case "frame":
-      state.frame = payload.data;
+      state.frames[payload.view || "robot_pov"] = payload.data;
       break;
     case "mission_state":
-      // merge so we keep any local fields not present in payload
       Object.assign(state.mission, payload);
+      if (payload.mission_id) {
+        state.selectedMissionId = payload.mission_id;
+      }
+      if (payload.latest_mission_end) {
+        state.missionResult = payload.latest_mission_end;
+      } else if (!["win", "fail"].includes(payload.status)) {
+        state.missionResult = null;
+      }
+      if (payload.player_name) {
+        storePlayerName(payload.player_name);
+        state.playerModalOpen = false;
+        state.awaitingPlayerNameAck = false;
+        if (state.pendingMissionId) {
+          const nextMissionId = state.pendingMissionId;
+          state.pendingMissionId = null;
+          sendStartMission(nextMissionId);
+        }
+      }
       break;
     case "tool_trace":
       state.mission.tool_trace = payload.calls;
       break;
     case "narration":
-      // narration arrives as a separate event; append to local log
       state.mission.narration_log = [...(state.mission.narration_log || []), payload.text];
       break;
     case "mission_end":
       state.mission.summary = payload.summary;
-      state.mission.status  = payload.status;
+      state.mission.status = payload.status;
+      state.mission.latest_mission_end = payload;
+      state.missionResult = payload;
       break;
     case "error":
       state.mission.error = payload.message;
+      if (payload.message.toLowerCase().includes("player name")) {
+        state.awaitingPlayerNameAck = false;
+        state.playerModalOpen = true;
+      }
       break;
   }
   render();
@@ -111,25 +183,35 @@ function send(payload) {
   }
 }
 
-function setConnection(mode) {
-  const labels  = { connecting: "Connecting", connected: "Connected", reconnecting: "Reconnecting" };
-  const classes = { connecting: "pill pill-idle", connected: "pill pill-ok", reconnecting: "pill pill-warn" };
-  el.connectionPill.textContent = labels[mode];
-  el.connectionPill.className   = classes[mode];
+function sendStartMission(missionId) {
+  state.missionResult = null;
+  state.mission.latest_mission_end = null;
+  state.selectedMissionId = missionId;
+  send({
+    type: "start_mission",
+    mission_id: missionId,
+    player_name: state.mission.player_name,
+  });
 }
 
-// ── Render ───────────────────────────────────────────────
+function setConnection(mode) {
+  const labels = { connecting: "Connecting", connected: "Connected", reconnecting: "Reconnecting" };
+  const classes = { connecting: "pill pill-idle", connected: "pill pill-ok", reconnecting: "pill pill-warn" };
+  el.connectionPill.textContent = labels[mode];
+  el.connectionPill.className = classes[mode];
+}
 
 function render() {
-  const m = state.mission;
+  const mission = state.mission;
+  const activeFrame = resolvePrimaryFrame();
+  const selectedMissionId = state.selectedMissionId || mission.mission_id || "wake_up";
 
-  // topbar pills
-  el.simPill.textContent   = `SIM: ${m.sim_mode}`;
-  el.brainPill.textContent = `BRAIN: ${m.brain_mode}`;
+  el.simPill.textContent = `SIM: ${mission.sim_mode}`;
+  el.brainPill.textContent = `BRAIN: ${mission.brain_mode}`;
+  el.playerNamePill.textContent = mission.player_name || "Unassigned";
 
-  // camera
-  if (state.frame) {
-    el.cameraImage.src = `data:image/jpeg;base64,${state.frame}`;
+  if (activeFrame) {
+    el.cameraImage.src = `data:image/jpeg;base64,${activeFrame}`;
     el.cameraImage.classList.remove("hidden");
     el.cameraPlaceholder.classList.add("hidden");
   } else {
@@ -137,58 +219,50 @@ function render() {
     el.cameraPlaceholder.classList.remove("hidden");
   }
 
-  // camera HUD overlay
-  el.hudMissionLabel.textContent = m.mission_label || "No mission";
-  el.hudStatus.textContent       = m.status;
-  el.hudPhase.textContent        = m.phase;
-  el.hudPrompts.textContent      = `${m.prompts_remaining} / ${m.prompts_budget} prompts`;
+  el.hudMissionLabel.textContent = mission.mission_label || "No mission";
+  el.hudStatus.textContent = mission.status;
+  el.hudPhase.textContent = mission.phase;
+  el.hudPrompts.textContent = `${mission.prompts_remaining} / ${mission.prompts_budget} prompts`;
 
-  // mission panel
-  el.objectiveValue.textContent  = m.objective || "Select a mission to begin.";
-  el.promptsValue.textContent    = `${m.prompts_remaining} / ${m.prompts_budget}`;
-  el.timerValue.textContent      = formatTimer(m.timer_seconds_remaining);
-  el.discoveriesValue.textContent = String(m.discovered_count || 0);
+  el.objectiveValue.textContent = mission.objective || "Select a mission to begin.";
+  el.goalValue.textContent = formatGoal(mission);
+  el.promptsValue.textContent = `${mission.prompts_remaining} / ${mission.prompts_budget}`;
+  el.timerValue.textContent = formatElapsed(mission.timer_seconds_remaining, false);
+  el.discoveriesValue.textContent = String(mission.discovered_count || 0);
+  el.summaryValue.textContent = mission.summary || "Waiting for mission start.";
 
-  // active mission button highlight
-  el.missionButtons.forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.missionId === m.mission_id);
+  el.missionButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.missionId === selectedMissionId);
   });
 
-  // error banner
-  if (m.error) {
-    el.errorBanner.textContent = m.error;
+  if (mission.error) {
+    el.errorBanner.textContent = mission.error;
     el.errorBanner.classList.remove("hidden");
   } else {
     el.errorBanner.classList.add("hidden");
   }
 
-  // conversation (source of truth = backend arrays)
-  renderConversation(m.prompt_history || [], m.narration_log || [], m.prompt_in_flight);
+  renderLeaderboard(selectedMissionId);
+  renderConversation(mission.prompt_history || [], mission.narration_log || [], mission.prompt_in_flight);
+  renderToolTrace(mission.tool_trace || []);
+  renderPlayerModal();
+  renderMissionResult();
 
-  // tool trace
-  renderToolTrace(m.tool_trace || []);
-
-  // session info
-  el.summaryValue.textContent = m.summary || "Waiting for mission start.";
-
-  // input enable/disable
-  const canType = state.connected && !m.prompt_in_flight && Boolean(m.mission_id);
+  const missionTerminal = ["win", "fail"].includes(mission.status);
+  const canType = state.connected && !mission.prompt_in_flight && Boolean(mission.mission_id) && Boolean(mission.player_name) && !missionTerminal;
   el.promptInput.disabled = !canType;
-  el.sendButton.disabled  = !canType;
+  el.sendButton.disabled = !canType;
 }
-
-// ── Conversation ─────────────────────────────────────────
 
 function renderConversation(history, narrations, inFlight) {
   const wrap = el.conversationWrap;
   const list = el.conversationList;
-
-  // build an ordered list of chat turns: user then CANIS, paired by index
   const items = [];
-  for (let i = 0; i < history.length; i++) {
-    items.push({ role: "user",  text: history[i].prompt });
-    if (narrations[i] !== undefined) {
-      items.push({ role: "canis", text: narrations[i] });
+
+  for (let index = 0; index < history.length; index += 1) {
+    items.push({ role: "user", text: history[index].prompt });
+    if (narrations[index] !== undefined) {
+      items.push({ role: "canis", text: narrations[index] });
     }
   }
   if (inFlight) {
@@ -200,12 +274,11 @@ function renderConversation(history, narrations, inFlight) {
     return;
   }
 
-  // full rebuild (list is short — mission budget max ~8 prompts)
   list.innerHTML = "";
   items.forEach((item) => {
     const li = document.createElement("li");
     if (item.role === "user") {
-      li.className   = "conv-user";
+      li.className = "conv-user";
       li.textContent = item.text;
     } else {
       li.className = item.typing ? "conv-canis conv-typing" : "conv-canis";
@@ -213,24 +286,20 @@ function renderConversation(history, narrations, inFlight) {
       const header = document.createElement("div");
       header.className = "conv-canis-header";
       const badge = document.createElement("span");
-      badge.className   = "canis-badge";
+      badge.className = "canis-badge";
       badge.textContent = "CANIS-1";
       header.appendChild(badge);
 
       const body = document.createElement("div");
-      body.className   = "conv-canis-body";
+      body.className = "conv-canis-body";
       body.textContent = item.typing ? "Processing…" : item.text;
 
       li.append(header, body);
     }
     list.appendChild(li);
   });
-
-  // scroll to latest message
   wrap.scrollTop = wrap.scrollHeight;
 }
-
-// ── Tool trace ───────────────────────────────────────────
 
 function renderToolTrace(calls) {
   const list = el.toolTraceList;
@@ -239,32 +308,144 @@ function renderToolTrace(calls) {
     list.innerHTML = "<li>No actions yet.</li>";
     return;
   }
+
   list.classList.remove("empty-state");
   list.innerHTML = "";
   calls.forEach((call) => {
-    const li     = document.createElement("li");
-    const name   = document.createElement("strong");
+    const item = document.createElement("li");
+    const name = document.createElement("strong");
     name.textContent = call.name;
     const params = document.createElement("span");
     params.textContent = JSON.stringify(call.params);
-    li.append(name, params);
-    list.appendChild(li);
+    item.append(name, params);
+    list.appendChild(item);
   });
 }
 
-// ── Helpers ──────────────────────────────────────────────
-
-function formatTimer(seconds) {
-  if (typeof seconds !== "number") return "--";
-  const m = String(Math.floor(seconds / 60)).padStart(2, "0");
-  const s = String(seconds % 60).padStart(2, "0");
-  return `${m}:${s}`;
+function renderLeaderboard(missionId) {
+  const entries = state.mission.leaderboards?.[missionId] || [];
+  el.leaderboardMission.textContent = MISSION_LABELS[missionId] || "Leaderboard";
+  renderLeaderboardList(el.leaderboardList, entries, "No wins recorded yet.");
 }
 
-// ── Events ───────────────────────────────────────────────
+function renderLeaderboardList(container, entries, emptyMessage) {
+  if (!entries.length) {
+    container.innerHTML = `<li class="leaderboard-empty">${emptyMessage}</li>`;
+    return;
+  }
 
-el.promptForm.addEventListener("submit", (e) => {
-  e.preventDefault();
+  container.innerHTML = "";
+  entries.forEach((entry) => {
+    const item = document.createElement("li");
+    item.className = "leaderboard-item";
+
+    const rank = document.createElement("span");
+    rank.className = "leaderboard-rank";
+    rank.textContent = `#${entry.rank}`;
+
+    const name = document.createElement("span");
+    name.className = "leaderboard-name";
+    name.textContent = entry.player_name;
+
+    const meta = document.createElement("span");
+    meta.className = "leaderboard-meta";
+    meta.textContent = `${entry.elapsed_display} • ${entry.prompts_used} prompts`;
+
+    item.append(rank, name, meta);
+    container.appendChild(item);
+  });
+}
+
+function renderPlayerModal() {
+  const shouldShow = state.playerModalOpen || (!state.mission.player_name && !state.awaitingPlayerNameAck);
+  el.playerModal.classList.toggle("hidden", !shouldShow);
+  if (shouldShow) {
+    el.playerNameInput.value = state.mission.player_name || getStoredPlayerName() || "";
+    if (document.activeElement !== el.playerNameInput) {
+      window.setTimeout(() => el.playerNameInput.focus(), 0);
+    }
+  }
+}
+
+function renderMissionResult() {
+  const result = state.missionResult;
+  if (!result) {
+    el.missionResultOverlay.classList.add("hidden");
+    return;
+  }
+
+  const isWin = result.status === "win";
+  el.missionResultOverlay.classList.remove("hidden");
+  el.resultFlag.textContent = isWin ? "MISSION FLAG RAISED" : "MISSION LOST";
+  el.resultFlag.classList.toggle("result-flag-fail", !isWin);
+  el.resultMissionLabel.textContent = result.mission_label || MISSION_LABELS[result.mission_id] || "Mission";
+  el.resultTitle.textContent = isWin ? "Level complete" : "Level failed";
+  el.resultSummary.textContent = result.summary || "Mission ended.";
+  el.resultTime.textContent = formatElapsed(result.elapsed_seconds, true);
+  el.resultPrompts.textContent = `${result.prompts_used} / ${result.prompts_budget}`;
+  el.resultRank.textContent = result.leaderboard_rank ? `#${result.leaderboard_rank}` : "--";
+  el.resultLeaderboardLabel.textContent = result.mission_label || MISSION_LABELS[result.mission_id] || "Mission";
+  el.replayLevelButton.textContent = isWin ? "Replay Level" : "Try Again";
+
+  if (isWin && result.next_mission_id) {
+    el.nextLevelButton.classList.remove("hidden");
+    el.nextLevelButton.textContent = `Next Level: ${MISSION_LABELS[result.next_mission_id] || result.next_mission_id}`;
+  } else {
+    el.nextLevelButton.classList.add("hidden");
+  }
+
+  renderLeaderboardList(el.resultLeaderboardList, result.leaderboard || [], "No wins recorded yet.");
+}
+
+function resolvePrimaryFrame() {
+  // Camera orbit and zoom controls update the spectator view, so prefer it
+  // whenever the backend provides one.
+  return state.frames.spectator_3d || state.frames.robot_pov || "";
+}
+
+function formatGoal(mission) {
+  if (!mission.mission_id) {
+    return "Reach the active target to raise the win flag.";
+  }
+  if (mission.goal_target_label && typeof mission.goal_distance_meters === "number" && typeof mission.goal_threshold_meters === "number") {
+    const ready = mission.goal_reached ? " • flag ready" : "";
+    return `${mission.goal_target_label}: ${mission.goal_distance_meters.toFixed(2)}m / ${mission.goal_threshold_meters.toFixed(2)}m${ready}`;
+  }
+  if (mission.goal_target_label) {
+    return mission.goal_target_label;
+  }
+  return "Goal position unavailable.";
+}
+
+function formatElapsed(seconds, includeTenths) {
+  if (typeof seconds !== "number") return "--";
+  const wholeMinutes = Math.floor(seconds / 60);
+  const remaining = seconds - wholeMinutes * 60;
+  if (includeTenths) {
+    return `${String(wholeMinutes).padStart(2, "0")}:${remaining.toFixed(1).padStart(4, "0")}`;
+  }
+  const wholeSeconds = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(wholeSeconds / 60)).padStart(2, "0")}:${String(wholeSeconds % 60).padStart(2, "0")}`;
+}
+
+function getStoredPlayerName() {
+  try {
+    return window.localStorage.getItem(PLAYER_NAME_STORAGE_KEY);
+  } catch (error) {
+    return null;
+  }
+}
+
+function storePlayerName(playerName) {
+  try {
+    window.localStorage.setItem(PLAYER_NAME_STORAGE_KEY, playerName);
+  } catch (error) {
+    return;
+  }
+}
+
+el.promptForm.addEventListener("submit", (event) => {
+  event.preventDefault();
   const prompt = el.promptInput.value.trim();
   if (!prompt) return;
   send({ type: "submit_prompt", prompt });
@@ -272,28 +453,75 @@ el.promptForm.addEventListener("submit", (e) => {
   el.promptInput.style.height = "auto";
 });
 
-el.resetButton.addEventListener("click", () => send({ type: "reset_session" }));
-
-el.missionButtons.forEach((btn) => {
-  btn.addEventListener("click", () => send({ type: "start_mission", mission_id: btn.dataset.missionId }));
+el.playerForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const playerName = el.playerNameInput.value.trim();
+  if (!playerName) {
+    state.mission.error = "Enter a player name before starting a mission.";
+    render();
+    return;
+  }
+  storePlayerName(playerName);
+  state.playerModalOpen = false;
+  state.awaitingPlayerNameAck = true;
+  send({ type: "set_player_name", player_name: playerName });
+  render();
 });
 
-// textarea: auto-resize height
+el.changePlayerButton.addEventListener("click", () => {
+  state.playerModalOpen = true;
+  render();
+});
+
+el.resetButton.addEventListener("click", () => {
+  state.missionResult = null;
+  state.mission.latest_mission_end = null;
+  send({ type: "reset_session" });
+});
+
+el.replayLevelButton.addEventListener("click", () => {
+  const missionId = state.missionResult?.mission_id || state.mission.mission_id || state.selectedMissionId;
+  if (!missionId) return;
+  sendStartMission(missionId);
+});
+
+el.nextLevelButton.addEventListener("click", () => {
+  const missionId = state.missionResult?.next_mission_id;
+  if (!missionId) return;
+  sendStartMission(missionId);
+});
+
+el.missionButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const missionId = button.dataset.missionId;
+    state.selectedMissionId = missionId;
+    if (!state.mission.player_name) {
+      state.pendingMissionId = missionId;
+      state.playerModalOpen = true;
+      render();
+      return;
+    }
+    sendStartMission(missionId);
+    render();
+  });
+});
+
 el.promptInput.addEventListener("input", () => {
   el.promptInput.style.height = "auto";
   el.promptInput.style.height = `${el.promptInput.scrollHeight}px`;
 });
 
-// Enter to submit (Shift+Enter = newline)
-el.promptInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
+el.promptInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
     el.promptForm.requestSubmit();
   }
 });
 
 window.addEventListener("beforeunload", () => {
-  if (reconnectTimeout) clearTimeout(reconnectTimeout);
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+  }
 });
 
 // ── Camera orbit controls ─────────────────────────────────

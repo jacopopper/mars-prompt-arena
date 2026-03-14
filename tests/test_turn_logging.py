@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from config import TurnLoggingConfig
+from ui.leaderboard import LeaderboardStore
 from ui.server import create_app
 from ui.turn_logging import TurnContext, TurnLogger, group_turns, load_log_records
 
@@ -163,13 +164,19 @@ class ServerTurnLoggingTests(unittest.TestCase):
             TurnLoggingConfig.ROOT_DIR = Path(tmpdir)
             TurnLoggingConfig.ENABLED = True
             try:
-                client = TestClient(create_app(sim_mode="fake", brain_mode="mock"))
+                leaderboard_store = LeaderboardStore(Path(tmpdir) / "leaderboards.json")
+                client = TestClient(create_app(sim_mode="fake", brain_mode="mock", leaderboard_store=leaderboard_store))
                 with client.websocket_connect("/ws") as websocket:
                     initial_events = []
                     while True:
                         payload = websocket.receive_json()
                         initial_events.append(payload)
                         if payload["type"] == "mission_state":
+                            break
+                    websocket.send_json({"type": "set_player_name", "player_name": "Logger"})
+                    while True:
+                        payload = websocket.receive_json()
+                        if payload["type"] == "mission_state" and payload["player_name"] == "Logger":
                             break
                     websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
                     while True:

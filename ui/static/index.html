@@ -16,9 +16,14 @@
         <span class="brand-name">Mars Prompt Arena</span>
       </div>
       <div class="topbar-right">
+        <span class="player-badge">
+          <span class="player-badge-label">Player</span>
+          <strong id="player-name-pill">Unassigned</strong>
+        </span>
         <span id="connection-pill" class="pill pill-idle">Connecting</span>
         <span id="sim-mode-pill" class="pill">SIM: fake</span>
         <span id="brain-mode-pill" class="pill">BRAIN: mock</span>
+        <button id="change-player-button" class="ghost-button" type="button">Player</button>
         <button id="reset-button" class="ghost-button" type="button">Reset</button>
       </div>
     </header>
@@ -58,6 +63,10 @@
               <span class="hud-label">Objective</span>
               <span id="objective-value" class="hud-val">Select a mission to begin.</span>
             </div>
+            <div class="hud-row">
+              <span class="hud-label">Goal</span>
+              <span id="goal-value" class="hud-val">Reach the active target to raise the win flag.</span>
+            </div>
             <div class="hud-row hud-metrics">
               <div class="hud-metric">
                 <span class="hud-label">Prompts</span>
@@ -72,6 +81,15 @@
                 <strong id="discoveries-value">0</strong>
               </div>
             </div>
+          </div>
+          <div class="leaderboard-panel">
+            <div class="leaderboard-header">
+              <span class="hud-label">Leaderboard</span>
+              <strong id="leaderboard-mission-label">Wake Up</strong>
+            </div>
+            <ol id="leaderboard-list" class="leaderboard-list">
+              <li class="leaderboard-empty">Set a player name to start logging wins.</li>
+            </ol>
           </div>
           <div id="error-banner" class="error-banner hidden"></div>
         </div>
@@ -121,6 +139,62 @@
     </div>
 
   </div><!-- end app-shell -->
+
+  <div id="player-modal" class="modal-shell hidden">
+    <div class="modal-card">
+      <div class="modal-tag">Operator Setup</div>
+      <h2>Choose a player name</h2>
+      <p>Your name is used for the per-level leaderboard and mission-end records.</p>
+      <form id="player-form" class="player-form">
+        <input
+          id="player-name-input"
+          type="text"
+          maxlength="24"
+          autocomplete="nickname"
+          placeholder="Operator name"
+        >
+        <button id="player-submit-button" type="submit" class="send-button player-submit-button">Save</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="mission-result-overlay" class="result-overlay hidden">
+    <div class="result-card">
+      <div id="result-flag" class="result-flag">MISSION FLAG RAISED</div>
+      <div class="result-copy">
+        <span id="result-mission-label" class="result-mission-label">Wake Up</span>
+        <h2 id="result-title">Level complete</h2>
+        <p id="result-summary" class="result-summary">Mission summary.</p>
+      </div>
+      <div class="result-metrics">
+        <div class="result-metric">
+          <span class="hud-label">Time</span>
+          <strong id="result-time">00:00.0</strong>
+        </div>
+        <div class="result-metric">
+          <span class="hud-label">Prompts</span>
+          <strong id="result-prompts">0</strong>
+        </div>
+        <div class="result-metric">
+          <span class="hud-label">Rank</span>
+          <strong id="result-rank">--</strong>
+        </div>
+      </div>
+      <div class="result-actions">
+        <button id="replay-level-button" class="ghost-button" type="button">Replay Level</button>
+        <button id="next-level-button" class="send-button result-next-button" type="button">Next Level</button>
+      </div>
+      <div class="result-leaderboard">
+        <div class="leaderboard-header">
+          <span class="hud-label">Level leaderboard</span>
+          <strong id="result-leaderboard-label">Wake Up</strong>
+        </div>
+        <ol id="result-leaderboard-list" class="leaderboard-list">
+          <li class="leaderboard-empty">No recorded wins yet.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>
