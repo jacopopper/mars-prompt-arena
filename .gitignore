@@ -26,6 +26,9 @@ Thumbs.db
 *.mjb
 *.log
 
+# Local only
+CLAUDE.md
+
 # Misc
 *.mp4
 *.avi
