@@ -89,6 +89,15 @@ class FakeEnvironment:
     def render(self) -> bytes:
         return self._draw_frame()
 
+    def current_state(self) -> RobotState:
+        return self._state()
+
+    def get_distance_to(self, target_id: str) -> float | None:
+        if target_id not in self._targets:
+            return None
+        tx, ty = self._targets[target_id]
+        return self._dist(tx, ty)
+
     # ------------------------------------------------------------------
     # Skills
     # ------------------------------------------------------------------
@@ -111,14 +120,16 @@ class FakeEnvironment:
 
     def _scan(self) -> ActionResult:
         found = []
+        found_ids = []
         for tid, (tx, ty) in self._targets.items():
             dist = self._dist(tx, ty)
-            if dist <= MissionConfig.SCAN_DISTANCE_METERS * 3:  # scan sees further
+            if dist <= MissionConfig.SCAN_DISTANCE_METERS * 4:
                 bearing = self._bearing_to(tx, ty)
                 found.append(f"{tid} ({dist:.1f}m, {bearing:.0f}°)")
+                found_ids.append(tid)
                 self._scanned.add(tid)
         if found:
-            msg = "Scan complete. Detected: " + ", ".join(found)
+            msg = "Scan complete. Detected: " + ", ".join(found) + f" targets=[{', '.join(found_ids)}]"
         else:
             msg = "Scan complete. No targets detected in range."
         return ActionResult(True, msg, self._state())
@@ -126,6 +137,8 @@ class FakeEnvironment:
     def _navigate_to(self, target_id: str = "") -> ActionResult:
         if target_id not in self._targets:
             return ActionResult(False, f"Unknown target: {target_id}", self._state())
+        if target_id not in self._scanned:
+            return ActionResult(False, f"{target_id} not yet discovered. Use scan first.", self._state())
         tx, ty = self._targets[target_id]
         dist = self._dist(tx, ty)
         self._x = tx - 1.0 * math.cos(math.radians(self._yaw))

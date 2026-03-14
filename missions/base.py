@@ -30,12 +30,11 @@ class Mission(ABC):
     def __init__(self) -> None:
         """Initialize the mission in an idle state."""
 
-        mission_numeric_id = MISSION_KEYS[self.mission_key]
         self.state = MissionState(
-            mission_id=mission_numeric_id,
+            mission_id=self.mission_key,
             status=MissionStatus.IDLE,
             prompts_used=0,
-            prompts_budget=MissionConfig.PROMPT_BUDGET[mission_numeric_id],
+            prompts_budget=MissionConfig.PROMPT_BUDGET[self.mission_key],
             elapsed_seconds=0.0,
             scanned_objects=[],
             extra={},
@@ -45,10 +44,10 @@ class Mission(ABC):
         """Start or restart the mission."""
 
         self.state = MissionState(
-            mission_id=MISSION_KEYS[self.mission_key],
+            mission_id=self.mission_key,
             status=MissionStatus.RUNNING,
             prompts_used=0,
-            prompts_budget=MissionConfig.PROMPT_BUDGET[MISSION_KEYS[self.mission_key]],
+            prompts_budget=MissionConfig.PROMPT_BUDGET[self.mission_key],
             elapsed_seconds=0.0,
             scanned_objects=[],
             extra=self.build_extra(),

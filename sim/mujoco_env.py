@@ -80,6 +80,16 @@ class MujocoEnvironment:
     def render(self) -> bytes:
         return self._render_jpeg()
 
+    def current_state(self) -> RobotState:
+        return self._state()
+
+    def get_distance_to(self, target_id: str) -> float | None:
+        targets = MISSION_TARGETS.get(self._mission_id, {})
+        body_name = targets.get(target_id)
+        if body_name is None:
+            return None
+        return self._dist_to_body(body_name)
+
     def close(self) -> None:
         if self._renderer:
             self._renderer.close()
@@ -138,14 +148,16 @@ class MujocoEnvironment:
     def _scan(self) -> ActionResult:
         targets = MISSION_TARGETS.get(self._mission_id, {})
         found = []
+        found_ids = []
         for name, body_name in targets.items():
             dist = self._dist_to_body(body_name)
             if dist is not None and dist < MissionConfig.SCAN_DISTANCE_METERS * 4:
                 bearing = self._bearing_to_body(body_name)
                 found.append(f"{name} ({dist:.1f}m, {bearing:.0f}°)")
+                found_ids.append(name)
                 self._scanned.add(name)
         if found:
-            msg = "Scan complete. Detected: " + ", ".join(found)
+            msg = "Scan complete. Detected: " + ", ".join(found) + f" targets=[{', '.join(found_ids)}]"
         else:
             msg = "Scan complete. No targets detected in range."
         return ActionResult(True, msg, self._state())
