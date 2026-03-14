@@ -93,6 +93,12 @@ class MujocoEnvironment:
     def render(self) -> bytes:
         return self._render_jpeg()
 
+    def render_views(self) -> dict[str, bytes]:
+        return {
+            "robot_pov": self._render_jpeg(),
+            "spectator_3d": self._render_spectator_jpeg(),
+        }
+
     def current_state(self) -> RobotState:
         """Return the current robot state without executing an action."""
 
@@ -272,6 +278,21 @@ class MujocoEnvironment:
             img = Image.blend(img, haze, 1.0 - self._visibility)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+    def _render_spectator_jpeg(self) -> bytes:
+        cam = mujoco.MjvCamera()
+        cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+        rx = float(self._data.qpos[0])
+        ry = float(self._data.qpos[1])
+        cam.lookat[:] = [rx, ry, 0.5]
+        cam.distance = 14.0
+        cam.elevation = -40.0
+        cam.azimuth = 200.0
+        self._renderer.update_scene(self._data, camera=cam)
+        frame = self._renderer.render()
+        buf = io.BytesIO()
+        Image.fromarray(frame).save(buf, format="JPEG", quality=80)
         return buf.getvalue()
 
     def _describe(self) -> str:

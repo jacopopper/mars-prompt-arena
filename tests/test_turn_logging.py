@@ -93,14 +93,16 @@ class ServerTurnLoggingTests(unittest.TestCase):
             try:
                 client = TestClient(create_app(sim_mode="fake", brain_mode="mock"))
                 with client.websocket_connect("/ws") as websocket:
-                    websocket.receive_json()
-                    websocket.receive_json()
+                    websocket.receive_json()  # frame robot_pov
+                    websocket.receive_json()  # frame spectator_3d
+                    websocket.receive_json()  # mission_state
                     websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
-                    websocket.receive_json()
-                    websocket.receive_json()
+                    websocket.receive_json()  # frame robot_pov
+                    websocket.receive_json()  # frame spectator_3d
+                    websocket.receive_json()  # mission_state
 
                     websocket.send_json({"type": "submit_prompt", "prompt": "Stand up and move forward."})
-                    events = [websocket.receive_json() for _ in range(8)]
+                    events = [websocket.receive_json() for _ in range(10)]
 
                 final_state = events[-1]
                 log_path = Path(final_state["latest_turn_log_path"])

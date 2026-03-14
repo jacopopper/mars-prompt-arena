@@ -46,30 +46,30 @@ class ServerTests(unittest.TestCase):
         """Submitting one prompt should emit the expected event ordering."""
 
         with self.client.websocket_connect("/ws") as websocket:
+            # initial snapshot: robot_pov + spectator_3d + mission_state
+            self.assertEqual(websocket.receive_json()["type"], "frame")
             self.assertEqual(websocket.receive_json()["type"], "frame")
             self.assertEqual(websocket.receive_json()["type"], "mission_state")
 
             websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
+            # start_mission: robot_pov + spectator_3d + mission_state
+            self.assertEqual(websocket.receive_json()["type"], "frame")
             self.assertEqual(websocket.receive_json()["type"], "frame")
             state = websocket.receive_json()
             self.assertEqual(state["type"], "mission_state")
             self.assertEqual(state["mission_id"], "wake_up")
 
             websocket.send_json({"type": "submit_prompt", "prompt": "Stand up and move forward."})
-            events = [websocket.receive_json() for _ in range(8)]
-            self.assertEqual(
-                [event["type"] for event in events],
-                [
-                    "mission_state",
-                    "tool_trace",
-                    "mission_state",
-                    "frame",
-                    "frame",
-                    "mission_state",
-                    "narration",
-                    "mission_state",
-                ],
-            )
+            events = [websocket.receive_json() for _ in range(10)]
+            types = [event["type"] for event in events]
+            self.assertEqual(types[0], "mission_state")   # thinking
+            self.assertEqual(types[1], "tool_trace")
+            self.assertEqual(types[2], "mission_state")   # acting
+            # frames: 2 views per action, variable number of actions
+            self.assertIn("frame", types)
+            self.assertEqual(types[-3], "mission_state")  # reporting
+            self.assertEqual(types[-2], "narration")
+            self.assertEqual(types[-1], "mission_state")  # idle
             final_state = events[-1]
             self.assertFalse(final_state["prompt_in_flight"])
             self.assertEqual(final_state["phase"], "idle")
@@ -79,17 +79,20 @@ class ServerTests(unittest.TestCase):
         """Resetting an active mission should clear prompt and narration history."""
 
         with self.client.websocket_connect("/ws") as websocket:
-            websocket.receive_json()
-            websocket.receive_json()
+            websocket.receive_json()  # frame robot_pov
+            websocket.receive_json()  # frame spectator_3d
+            websocket.receive_json()  # mission_state
             websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
-            websocket.receive_json()
-            websocket.receive_json()
+            websocket.receive_json()  # frame robot_pov
+            websocket.receive_json()  # frame spectator_3d
+            websocket.receive_json()  # mission_state
 
             websocket.send_json({"type": "submit_prompt", "prompt": "Stand up and move forward."})
-            for _ in range(8):
+            for _ in range(10):
                 websocket.receive_json()
 
             websocket.send_json({"type": "reset_session"})
+            self.assertEqual(websocket.receive_json()["type"], "frame")
             self.assertEqual(websocket.receive_json()["type"], "frame")
             state = websocket.receive_json()
             self.assertEqual(state["type"], "mission_state")
@@ -101,10 +104,12 @@ class ServerTests(unittest.TestCase):
         """Starting Storm should expose timer data to the frontend HUD."""
 
         with self.client.websocket_connect("/ws") as websocket:
-            websocket.receive_json()
-            websocket.receive_json()
+            websocket.receive_json()  # frame robot_pov
+            websocket.receive_json()  # frame spectator_3d
+            websocket.receive_json()  # mission_state
             websocket.send_json({"type": "start_mission", "mission_id": "storm"})
-            websocket.receive_json()
+            websocket.receive_json()  # frame robot_pov
+            websocket.receive_json()  # frame spectator_3d
             state = websocket.receive_json()
             self.assertEqual(state["type"], "mission_state")
             self.assertEqual(state["mission_id"], "storm")

@@ -193,7 +193,7 @@ async def _start_mission(websocket: WebSocket, session: SessionState, mission_id
     session.last_narration_retry_count = 0
     mission.start()
     session.robot_state = session.env.reset(mission_id)
-    await _emit_frame(websocket, session.robot_state.camera_frame)
+    await _emit_views(websocket, session)
     await _emit_state(websocket, session)
 
 
@@ -339,7 +339,7 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
                 message=result.message,
                 resulting_state=_state_summary(result.new_state),
             )
-            await _emit_frame(websocket, latest_state.camera_frame)
+            await _emit_views(websocket, session)
 
         session.phase = "reporting"
         await _emit_state(websocket, session)
@@ -427,19 +427,33 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
 async def _emit_snapshot(websocket: WebSocket, session: SessionState) -> None:
     """Send a full state snapshot to a newly connected client."""
 
-    await _emit_frame(websocket, session.robot_state.camera_frame)
+    await _emit_views(websocket, session)
     await _emit_state(websocket, session)
 
 
-async def _emit_frame(websocket: WebSocket, frame_bytes: bytes) -> None:
-    """Emit a base64-encoded frame event."""
+async def _emit_frame(websocket: WebSocket, frame_bytes: bytes, view: str = "robot_pov") -> None:
+    """Emit a base64-encoded frame event for a named view."""
 
     await websocket.send_json(
         {
             "type": "frame",
+            "view": view,
             "data": base64.b64encode(frame_bytes).decode("ascii"),
         }
     )
+
+
+async def _emit_views(websocket: WebSocket, session: SessionState) -> None:
+    """Emit robot_pov and spectator_3d frames from the active environment."""
+
+    render_views_fn = getattr(session.env, "render_views", None)
+    if render_views_fn is not None:
+        views = render_views_fn()
+        for view_name, frame_bytes in views.items():
+            if frame_bytes:
+                await _emit_frame(websocket, frame_bytes, view=view_name)
+    else:
+        await _emit_frame(websocket, session.robot_state.camera_frame, view="robot_pov")
 
 
 async def _emit_narration(websocket: WebSocket, text: str) -> None:

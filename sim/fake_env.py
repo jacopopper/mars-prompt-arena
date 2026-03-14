@@ -97,6 +97,12 @@ class FakeEnvironment:
     def render(self) -> bytes:
         return self._draw_frame()
 
+    def render_views(self) -> dict[str, bytes]:
+        return {
+            "robot_pov": self._draw_frame(),
+            "spectator_3d": self._draw_spectator_frame(),
+        }
+
     def current_state(self) -> RobotState:
         """Return the current robot state without advancing the environment."""
 
@@ -239,5 +245,59 @@ class FakeEnvironment:
         if self._visibility < 1.0:
             haze = Image.new("RGB", (_W, _H), color=(180, 150, 120))
             img = Image.blend(img, haze, 1.0 - self._visibility)
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+    def _draw_spectator_frame(self) -> bytes:
+        img = Image.new("RGB", (_W, _H), color=(22, 12, 6))
+        draw = ImageDraw.Draw(img)
+
+        # grid
+        for i in range(0, _W, _PX_PER_M):
+            draw.line([(i, 0), (i, _H)], fill=(38, 22, 12), width=1)
+        for i in range(0, _H, _PX_PER_M):
+            draw.line([(0, i), (_W, i)], fill=(38, 22, 12), width=1)
+
+        # scan radius ring (operator can see what the robot can detect)
+        rx, ry = _world_to_px(self._x, self._y)
+        scan_r_px = int(MissionConfig.SCAN_DISTANCE_METERS * 4 * _PX_PER_M)
+        draw.ellipse(
+            [rx - scan_r_px, ry - scan_r_px, rx + scan_r_px, ry + scan_r_px],
+            outline=(60, 160, 60), width=1,
+        )
+
+        # targets — filled green if scanned, hollow red if not
+        for tid, (tx, ty) in self._targets.items():
+            px, py = _world_to_px(tx, ty)
+            scanned = tid in self._scanned
+            color = (60, 200, 80) if scanned else (200, 60, 60)
+            r = 12
+            draw.ellipse([px - r, py - r, px + r, py + r],
+                         fill=color if scanned else None,
+                         outline=color, width=2)
+            dist = self._dist(tx, ty)
+            draw.text((px + r + 3, py - 8), tid, fill=color)
+            draw.text((px + r + 3, py + 4), f"{dist:.1f}m", fill=(160, 160, 160))
+
+        # robot body
+        r = 9
+        draw.ellipse([rx - r, ry - r, rx + r, ry + r], fill=(220, 180, 60))
+
+        # direction arrow (longer for clarity)
+        rad = math.radians(self._yaw)
+        ax = int(rx + math.cos(rad) * 24)
+        ay = int(ry - math.sin(rad) * 24)
+        draw.line([(rx, ry), (ax, ay)], fill=(255, 240, 80), width=3)
+
+        # HUD
+        draw.text((8, 8),  "SPECTATOR", fill=(100, 200, 255))
+        draw.text((8, 24), f"pos  ({self._x:.1f}, {self._y:.1f})", fill=(200, 200, 200))
+        draw.text((8, 40), f"yaw  {self._yaw:.0f}°", fill=(200, 200, 200))
+        draw.text((8, 56), f"{'STANDING' if self._standing else 'SITTING'}",
+                  fill=(100, 220, 100) if self._standing else (220, 100, 100))
+        scanned_str = ", ".join(self._scanned) if self._scanned else "none"
+        draw.text((8, 72), f"scanned: {scanned_str}", fill=(160, 220, 160))
+
+        buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
