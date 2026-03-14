@@ -92,11 +92,10 @@ class MujocoEnvironment:
                 return ActionResult(False, f"Unknown skill: {action.skill}", self._state())
 
     def render(self) -> bytes:
-        return self._render_jpeg()
+        return self._render_spectator_jpeg()
 
     def render_views(self) -> dict[str, bytes]:
         return {
-            "robot_pov": self._render_jpeg(),
             "spectator_3d": self._render_spectator_jpeg(),
         }
 
@@ -317,17 +316,6 @@ class MujocoEnvironment:
         rx, ry = float(self._data.qpos[0]), float(self._data.qpos[1])
         return math.degrees(math.atan2(ty - ry, tx - rx)) % 360
 
-    def _render_jpeg(self) -> bytes:
-        self._renderer.update_scene(self._data, camera="robot_cam")
-        frame = self._renderer.render()
-        img = Image.fromarray(frame)
-        if self._visibility < 1.0:
-            haze = Image.new("RGB", img.size, color=(196, 168, 142))
-            img = Image.blend(img, haze, 1.0 - self._visibility)
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        return buf.getvalue()
-
     def _render_spectator_jpeg(self) -> bytes:
         cam = mujoco.MjvCamera()
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
@@ -339,8 +327,12 @@ class MujocoEnvironment:
         cam.azimuth = 200.0
         self._renderer.update_scene(self._data, camera=cam)
         frame = self._renderer.render()
+        img = Image.fromarray(frame)
+        if self._visibility < 1.0:
+            haze = Image.new("RGB", img.size, color=(196, 168, 142))
+            img = Image.blend(img, haze, 1.0 - self._visibility)
         buf = io.BytesIO()
-        Image.fromarray(frame).save(buf, format="JPEG", quality=80)
+        img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
 
     def _describe(self) -> str:
@@ -368,7 +360,7 @@ class MujocoEnvironment:
         return RobotState(
             position=(x, y, z),
             orientation=yaw_deg,
-            camera_frame=self._render_jpeg(),
+            camera_frame=self._render_spectator_jpeg(),
             battery=1.0,
             is_standing=standing,
             contacts=contacts,
