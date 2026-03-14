@@ -43,7 +43,7 @@ class ServerTests(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Mars Prompt Arena", response.text)
-        self.assertIn("Mission Control", response.text)
+        self.assertIn("CANIS-1", response.text)
 
     def test_requested_modes_are_exposed_for_mujoco_and_gemini(self) -> None:
         """Health should reflect alternate runtime mode selections."""

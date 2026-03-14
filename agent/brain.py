@@ -55,7 +55,7 @@ class GeminiBrain(Brain):
                 "tool_names": [tool["name"] for tool in gemini_tool_declarations()],
                 "image_present": bool(state.camera_frame),
                 "image_bytes": len(state.camera_frame),
-                "temperature": 0.1,
+                "temperature": GeminiConfig.TEMPERATURE,
                 "max_output_tokens": GeminiConfig.MAX_TOKENS,
             },
         }
@@ -115,7 +115,7 @@ class GeminiBrain(Brain):
                 "state_summary": self._state_summary(state),
                 "image_present": bool(state.camera_frame),
                 "image_bytes": len(state.camera_frame),
-                "temperature": 0.3,
+                "temperature": GeminiConfig.TEMPERATURE,
                 "max_output_tokens": GeminiConfig.MAX_TOKENS,
             },
         }
@@ -178,8 +178,14 @@ class GeminiBrain(Brain):
                     "Plan the next safe robot actions.\n"
                     "Return only function calls from the available tools.\n"
                     "Use at most five actions.\n"
+                    "Do not stop after posture preparation if the user also asked for a compatible next action in the same prompt.\n"
                     "If the user clearly asked for multiple compatible steps, complete the short sequence in one turn instead of stopping after the first safe action.\n"
+                    "If the robot is sitting and the prompt asks for locomotion, include the required `stand()` action and the requested locomotion action in the same turn when they fit within the action limit.\n"
                     "When the user asks to scan and then report what was detected, include both `scan()` and `report()` if they fit within the action limit.\n\n"
+                    "Examples:\n"
+                    "- If the prompt is `walk forward` and the robot is not standing, return `stand()` and `walk(direction=\"forward\", speed=0.4, duration=2.0)`.\n"
+                    "- If the prompt is `turn left and walk forward`, return `turn(angle_deg=45)` and `walk(direction=\"forward\", speed=0.4, duration=2.0)`.\n"
+                    "- If the prompt is `scan and report what you detect`, return `scan()` and `report()`.\n\n"
                     f"User prompt:\n{prompt}\n\n"
                     f"Mission context:\n{mission_ctx}\n\n"
                     f"Robot state:\n{self._state_summary(state)}"
@@ -205,7 +211,7 @@ class GeminiBrain(Brain):
             "tools": [{"functionDeclarations": gemini_tool_declarations()}],
             "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
             "generationConfig": {
-                "temperature": 0.1,
+                "temperature": GeminiConfig.TEMPERATURE,
                 "maxOutputTokens": GeminiConfig.MAX_TOKENS,
             },
         }
@@ -246,7 +252,7 @@ class GeminiBrain(Brain):
             "systemInstruction": {"parts": [{"text": GeminiConfig.SYSTEM_PROMPT}]},
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
-                "temperature": 0.3,
+                "temperature": GeminiConfig.TEMPERATURE,
                 "maxOutputTokens": GeminiConfig.MAX_TOKENS,
             },
         }
@@ -452,14 +458,30 @@ class GeminiBrain(Brain):
         completed = list(actions[:5])
         repairs: list[dict[str, Any]] = []
         text = prompt.lower()
+        requested_turn = self._requested_turn_action(text)
+        requested_walk = self._requested_walk_action(text)
 
         def has_action(skill: str) -> bool:
             return any(action.skill == skill for action in completed)
 
-        def add_action(skill: str, params: dict[str, Any], reason: str) -> None:
+        def add_action(
+            skill: str,
+            params: dict[str, Any],
+            reason: str,
+            *,
+            before_skills: tuple[str, ...] = (),
+        ) -> None:
+            nonlocal completed
             if len(completed) >= 5 or has_action(skill):
                 return
-            completed.append(Action(skill=skill, params=params))
+
+            insert_at = len(completed)
+            for index, action in enumerate(completed):
+                if action.skill in before_skills:
+                    insert_at = index
+                    break
+
+            completed.insert(insert_at, Action(skill=skill, params=params))
             repairs.append(
                 {
                     "source": "postprocess",
@@ -468,16 +490,38 @@ class GeminiBrain(Brain):
                 }
             )
 
-        if self._wants_stand(text) and not state.is_standing and not has_action("stand"):
+        needs_stand_for_requested_mobility = requested_walk is not None and not state.is_standing
+        if (self._wants_stand(text) or needs_stand_for_requested_mobility) and not state.is_standing and not has_action("stand"):
+            stand_reason = (
+                "Inserted stand action before the explicitly requested locomotion step."
+                if needs_stand_for_requested_mobility and not self._wants_stand(text)
+                else "Inserted requested stand action before follow-up tools."
+            )
             completed.insert(0, Action(skill="stand", params={}))
             repairs.append(
                 {
                     "source": "postprocess",
-                    "reason": "Inserted requested stand action before follow-up tools.",
+                    "reason": stand_reason,
                     "action": {"name": "stand", "params": {}},
                 }
             )
             completed = completed[:5]
+
+        if requested_turn is not None:
+            add_action(
+                "turn",
+                dict(requested_turn.params),
+                "Added requested turn action omitted by Gemini.",
+                before_skills=("walk", "navigate_to", "scan", "report"),
+            )
+
+        if requested_walk is not None:
+            add_action(
+                "walk",
+                dict(requested_walk.params),
+                "Added requested walk action omitted by Gemini.",
+                before_skills=("navigate_to", "scan", "report"),
+            )
 
         if self._wants_scan(text):
             add_action("scan", {}, "Added requested scan action omitted by Gemini.")
@@ -590,6 +634,59 @@ class GeminiBrain(Brain):
             "summarize",
         )
         return any(marker in text for marker in report_markers)
+
+    @staticmethod
+    def _requested_turn_action(text: str) -> Action | None:
+        """Infer a simple explicit turn request from the prompt text."""
+
+        if "turn around" in text or "rotate around" in text:
+            return Action("turn", {"angle_deg": 180.0})
+        if "turn left" in text or "rotate left" in text:
+            return Action("turn", {"angle_deg": 45.0})
+        if "turn right" in text or "rotate right" in text:
+            return Action("turn", {"angle_deg": -45.0})
+        return None
+
+    @staticmethod
+    def _requested_walk_action(text: str) -> Action | None:
+        """Infer an explicit short walk request from the prompt text."""
+
+        directional_phrases = (
+            "walk",
+            "step",
+            "advance",
+            "move forward",
+            "move backward",
+            "move left",
+            "move right",
+            "go forward",
+            "go backward",
+            "go left",
+            "go right",
+            "head forward",
+            "head backward",
+            "head left",
+            "head right",
+        )
+        if not any(phrase in text for phrase in directional_phrases):
+            return None
+
+        direction = "forward"
+        if "backward" in text or "backwards" in text:
+            direction = "backward"
+        elif "move left" in text or "walk left" in text or "step left" in text or "go left" in text or "head left" in text:
+            direction = "left"
+        elif "move right" in text or "walk right" in text or "step right" in text or "go right" in text or "head right" in text:
+            direction = "right"
+
+        return Action(
+            "walk",
+            {
+                "direction": direction,
+                "speed": 0.4,
+                "duration": 2.0,
+            },
+        )
 
     @staticmethod
     def _normalize_narration(text: str) -> str:

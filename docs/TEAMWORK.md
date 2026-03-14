@@ -172,7 +172,7 @@ agent/mock_brain.py
   → Builder A unblocked immediately
 
 agent/brain.py
-  → Gemini 2.5 Flash with function calling
+  → Gemini 3 Flash Preview with function calling
   → plan(): prompt + base64 frame + state summary + tools → parse tool calls
   → narrate(): results → first-person narration as CANIS-1
   → turn trace metadata for logs, retries, fallback provenance

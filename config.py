@@ -96,7 +96,8 @@ class MissionConfig:
 
 class GeminiConfig:
     API_KEY       = os.getenv("GEMINI_API_KEY", "")
-    MODEL         = "gemini-2.5-flash"
+    MODEL         = "gemini-3-flash-preview"
+    TEMPERATURE   = 1.0
     MAX_TOKENS    = 1024
 
     SYSTEM_PROMPT = """You are CANIS-1, an autonomous robot dog operating on Mars.

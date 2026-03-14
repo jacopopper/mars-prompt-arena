@@ -29,9 +29,9 @@ class MockBrain(Brain):
             actions.append(Action("sit", {}))
 
         if "turn left" in text:
-            actions.append(Action("turn", {"angle_deg": -45.0}))
-        elif "turn right" in text:
             actions.append(Action("turn", {"angle_deg": 45.0}))
+        elif "turn right" in text:
+            actions.append(Action("turn", {"angle_deg": -45.0}))
         elif "turn around" in text:
             actions.append(Action("turn", {"angle_deg": 180.0}))
 

@@ -4,7 +4,7 @@
 
 A playable prototype where a Unitree Go2 robot dog operates on Mars.
 Users send natural-language prompts to control the robot through 3 missions.
-Gemini 2.5 Flash is the AI brain. MuJoCo is the physics simulator.
+Gemini 3 Flash Preview is the AI brain. MuJoCo is the physics simulator.
 
 ## Key files to understand before touching anything
 
@@ -46,7 +46,7 @@ user prompt → brain.plan() → list[Action] → dispatcher → env.execute() �
 ## Brain modes
 
 - `mock_brain.py` — keyword matching, no API key needed
-- `brain.py` — real Gemini 2.5 Flash, requires `GEMINI_API_KEY` in `.env`
+- `brain.py` — real Gemini 3 Flash Preview, requires `GEMINI_API_KEY` in `.env`
 
 ## What not to do
 

@@ -137,6 +137,75 @@ class GeminiBrainTests(unittest.TestCase):
         self.assertEqual(len(trace["postprocess_repairs"]), 1)
         self.assertEqual(trace["postprocess_repairs"][0]["action"]["name"], "report")
 
+    def test_plan_completes_walk_forward_from_sitting_start(self) -> None:
+        """A locomotion prompt from sitting should become stand-plus-walk."""
+
+        sitting_state = RobotState(
+            position=(0.0, 0.0, 0.1),
+            orientation=0.0,
+            camera_frame=b"jpeg",
+            battery=1.0,
+            is_standing=False,
+            contacts=[],
+        )
+        brain = GeminiBrain(api_key="test-key", allow_fallback=False)
+        with patch.object(
+            brain,
+            "_request_with_retries",
+            return_value={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "I am currently sitting. I will stand up and then walk forward."},
+                                {"functionCall": {"name": "stand", "args": {}}},
+                            ]
+                        }
+                    }
+                ]
+            },
+        ):
+            actions = brain.plan("walk forward", sitting_state, "ctx")
+        self.assertEqual([action.skill for action in actions], ["stand", "walk"])
+        self.assertEqual(actions[1].params["direction"], "forward")
+        self.assertEqual(actions[1].params["speed"], 0.4)
+        self.assertEqual(actions[1].params["duration"], 2.0)
+        trace = brain.consume_plan_trace()
+        self.assertEqual([call["raw_name"] for call in trace["parsed_calls"]], ["stand"])
+        self.assertEqual(
+            [repair["action"]["name"] for repair in trace["postprocess_repairs"]],
+            ["walk"],
+        )
+
+    def test_plan_completes_turn_then_walk_sequence(self) -> None:
+        """A mixed turn-and-walk prompt should keep the requested ordering."""
+
+        brain = GeminiBrain(api_key="test-key", allow_fallback=False)
+        with patch.object(
+            brain,
+            "_request_with_retries",
+            return_value={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"functionCall": {"name": "walk", "args": {"direction": "forward"}}},
+                            ]
+                        }
+                    }
+                ]
+            },
+        ):
+            actions = brain.plan("Turn left and walk forward.", self.state, "ctx")
+        self.assertEqual([action.skill for action in actions], ["turn", "walk"])
+        self.assertEqual(actions[0].params["angle_deg"], 45.0)
+        self.assertEqual(actions[1].params["direction"], "forward")
+        trace = brain.consume_plan_trace()
+        self.assertEqual(
+            [repair["action"]["name"] for repair in trace["postprocess_repairs"]],
+            ["turn", "walk"],
+        )
+
     def test_narration_extracts_text(self) -> None:
         """Narration responses should read back the model text."""
 

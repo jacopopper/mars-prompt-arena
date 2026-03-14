@@ -5,7 +5,7 @@
 | Layer | Technology |
 |---|---|
 | Simulation | MuJoCo + Go2 MJCF (mujoco-menagerie) |
-| AI Brain | Gemini 2.5 Flash (multimodal + function calling) |
+| AI Brain | Gemini 3 Flash Preview (multimodal + function calling) |
 | Backend | FastAPI + WebSocket |
 | Frontend | HTML/JS (camera feed + chat + mission HUD) |
 | Language | Python 3.11+ |

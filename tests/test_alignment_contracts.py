@@ -90,6 +90,29 @@ class BackendContractTests(unittest.TestCase):
             finally:
                 self._close_env(env)
 
+    def test_walk_keeps_heading_and_turn_follows_ccw_sign(self) -> None:
+        """Walking should translate without unintended spin, and left turns should increase yaw."""
+
+        for env in self._build_envs():
+            try:
+                state = env.reset("wake_up")
+                if not state.is_standing:
+                    state = env.execute(Action("stand", {})).new_state
+
+                turned = env.execute(Action("turn", {"angle_deg": 45.0}))
+                self.assertTrue(turned.success)
+                turned_yaw = turned.new_state.orientation
+
+                walked = env.execute(Action("walk", {"direction": "forward", "speed": 0.4, "duration": 2.0}))
+                self.assertTrue(walked.success)
+                walked_yaw = walked.new_state.orientation
+
+                self.assertTrue(walked.new_state.is_standing)
+                self.assertGreater(turned_yaw, state.orientation - 1.0)
+                self.assertAlmostEqual(walked_yaw, turned_yaw, delta=5.0)
+            finally:
+                self._close_env(env)
+
     @staticmethod
     def _build_envs() -> list[object]:
         """Construct both environment implementations for parity checks."""

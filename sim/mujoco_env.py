@@ -180,40 +180,28 @@ class MujocoEnvironment:
         return ActionResult(True, "Sitting down.", self._state())
 
     def _walk(self, direction: str = "forward", speed: float = 0.4, duration: float = 2.0) -> ActionResult:
-        # steps = number of mj_steps needed to simulate `duration` seconds
-        steps = int(duration / SimConfig.TIMESTEP)
-        vx, vy = 0.0, 0.0
-        if   direction == "forward":  vx =  speed
-        elif direction == "backward": vx = -speed
-        elif direction == "left":     vy =  speed
-        elif direction == "right":    vy = -speed
+        """Move the robot in the body frame using a stable planar pose update."""
+
+        dist = speed * duration
+        dx_body = {"forward": 1.0, "backward": -1.0, "left": 0.0, "right": 0.0}.get(direction, 0.0)
+        dy_body = {"forward": 0.0, "backward": 0.0, "left": 1.0, "right": -1.0}.get(direction, 0.0)
 
         yaw = self._yaw()
-        wx = vx * math.cos(yaw) - vy * math.sin(yaw)
-        wy = vx * math.sin(yaw) + vy * math.cos(yaw)
-
-        for _ in range(steps):
-            self._data.qvel[0] = wx
-            self._data.qvel[1] = wy
-            self._apply_pd()
-            mujoco.mj_step(self._model, self._data)
-
-        self._data.qvel[:3] = 0
-        actual_dist = math.sqrt(self._data.qpos[0]**2 + self._data.qpos[1]**2)
+        dx_world = (dx_body * math.cos(yaw) - dy_body * math.sin(yaw)) * dist
+        dy_world = (dx_body * math.sin(yaw) + dy_body * math.cos(yaw)) * dist
+        self._set_planar_pose(
+            x=float(self._data.qpos[0]) + dx_world,
+            y=float(self._data.qpos[1]) + dy_world,
+        )
+        self._settle(40)
         return ActionResult(True, f"Walked {direction} ~{speed * duration:.1f}m.", self._state())
 
     def _turn(self, angle_deg: float = 0.0) -> ActionResult:
-        angular_speed = 1.5  # rad/s
-        total_rad = math.radians(abs(angle_deg))
-        sign = 1 if angle_deg > 0 else -1
-        steps = int(total_rad / (angular_speed * SimConfig.TIMESTEP))
+        """Rotate the robot in place with a direct yaw update."""
 
-        for _ in range(steps):
-            self._data.qvel[5] = sign * angular_speed
-            self._apply_pd()
-            mujoco.mj_step(self._model, self._data)
-        self._data.qvel[5] = 0
-        self._settle(50)
+        next_yaw = self._yaw() + math.radians(angle_deg)
+        self._set_planar_pose(yaw=next_yaw)
+        self._settle(40)
         return ActionResult(True, f"Turned {angle_deg:+.0f}°.", self._state())
 
     def _scan(self) -> ActionResult:
@@ -247,9 +235,10 @@ class MujocoEnvironment:
         dx, dy = tx - rx, ty - ry
         norm = math.sqrt(dx**2 + dy**2) + 1e-6
         offset = max(0.0, MissionConfig.WIN_DISTANCE_METERS - 0.05)
-        self._data.qpos[0] = tx - (dx / norm) * offset
-        self._data.qpos[1] = ty - (dy / norm) * offset
-        mujoco.mj_forward(self._model, self._data)
+        self._set_planar_pose(
+            x=tx - (dx / norm) * offset,
+            y=ty - (dy / norm) * offset,
+        )
         self._settle(100)
 
         final_dist = self._dist_to_body(body_name)
@@ -272,6 +261,31 @@ class MujocoEnvironment:
     def _move_joints(self, target_qpos: np.ndarray, steps: int) -> None:
         self._target_qpos = target_qpos.copy()
         self._settle(steps)
+
+    def _set_planar_pose(
+        self,
+        *,
+        x: float | None = None,
+        y: float | None = None,
+        yaw: float | None = None,
+    ) -> None:
+        """Update the free joint pose kinematically while keeping the stance stable."""
+
+        if x is not None:
+            self._data.qpos[0] = x
+        if y is not None:
+            self._data.qpos[1] = y
+        if yaw is not None:
+            self._data.qpos[3:7] = self._quat_from_yaw(yaw)
+        self._data.qvel[:6] = 0
+        mujoco.mj_forward(self._model, self._data)
+
+    @staticmethod
+    def _quat_from_yaw(yaw: float) -> np.ndarray:
+        """Build a world-frame quaternion for a pure yaw rotation."""
+
+        half = yaw / 2.0
+        return np.array([math.cos(half), 0.0, 0.0, math.sin(half)])
 
     def _yaw(self) -> float:
         qw, qx, qy, qz = self._data.qpos[3:7]

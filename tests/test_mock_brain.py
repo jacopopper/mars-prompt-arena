@@ -39,6 +39,14 @@ class MockBrainTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0].skill, "report")
 
+    def test_turn_keywords_follow_ccw_positive_yaw(self) -> None:
+        """Left turns should be positive and right turns negative."""
+
+        left_actions = self.brain.plan("Turn left.", self.state, "mission")
+        right_actions = self.brain.plan("Turn right.", self.state, "mission")
+        self.assertEqual(left_actions[0].params["angle_deg"], 45.0)
+        self.assertEqual(right_actions[0].params["angle_deg"], -45.0)
+
     def test_narration_stays_first_person(self) -> None:
         """Narration should read like a direct report from the robot."""
 
