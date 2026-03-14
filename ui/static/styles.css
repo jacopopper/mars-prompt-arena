@@ -109,6 +109,8 @@ html, body {
   background: #0b0705;
   border: 1px solid var(--panel-border);
   min-height: 0;
+  cursor: grab;
+  user-select: none;
 }
 
 #camera-image {

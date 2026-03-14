@@ -180,6 +180,19 @@ async def _handle_client_event(
             await _run_turn(websocket, session, prompt.strip())
         return
 
+    if event_type == "camera_control":
+        set_cam = getattr(session.env, "set_camera_params", None)
+        if callable(set_cam):
+            set_cam(
+                azimuth=message.get("azimuth"),
+                elevation=message.get("elevation"),
+                distance=message.get("distance"),
+            )
+            frame_views = _collect_frame_views(session.env, session.robot_state)
+            for view_name, frame_bytes in frame_views.items():
+                await _emit_frame(websocket, view_name, frame_bytes)
+        return
+
     await _emit_error(websocket, session, f"Unsupported event type '{event_type}'.")
 
 

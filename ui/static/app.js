@@ -296,4 +296,48 @@ window.addEventListener("beforeunload", () => {
   if (reconnectTimeout) clearTimeout(reconnectTimeout);
 });
 
+// ── Camera orbit controls ─────────────────────────────────
+
+const cam = { azimuth: 200, elevation: -25, distance: 6 };
+let _dragOrigin = null;
+let _camThrottle = null;
+
+function sendCameraControl() {
+  send({ type: "camera_control", azimuth: cam.azimuth, elevation: cam.elevation, distance: cam.distance });
+}
+
+function scheduleCameraControl() {
+  if (_camThrottle) return;
+  _camThrottle = setTimeout(() => { _camThrottle = null; sendCameraControl(); }, 80);
+}
+
+const cameraWrap = document.querySelector(".camera-wrap");
+
+cameraWrap.addEventListener("mousedown", (e) => {
+  _dragOrigin = { x: e.clientX, y: e.clientY };
+  cameraWrap.style.cursor = "grabbing";
+  e.preventDefault();
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (!_dragOrigin) return;
+  const dx = e.clientX - _dragOrigin.x;
+  const dy = e.clientY - _dragOrigin.y;
+  _dragOrigin = { x: e.clientX, y: e.clientY };
+  cam.azimuth = (cam.azimuth - dx * 0.5 + 360) % 360;
+  cam.elevation = Math.max(-89, Math.min(-5, cam.elevation + dy * 0.3));
+  scheduleCameraControl();
+});
+
+window.addEventListener("mouseup", () => {
+  _dragOrigin = null;
+  cameraWrap.style.cursor = "";
+});
+
+cameraWrap.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  cam.distance = Math.max(2, Math.min(30, cam.distance + e.deltaY * 0.01));
+  scheduleCameraControl();
+}, { passive: false });
+
 connect();

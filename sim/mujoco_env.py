@@ -42,6 +42,9 @@ class MujocoEnvironment:
         self._mission_id: str = ""
         self._scanned: set[str] = set()
         self._visibility: float = 1.0
+        self._cam_azimuth: float = 200.0
+        self._cam_elevation: float = -25.0
+        self._cam_distance: float = 6.0
 
     # ------------------------------------------------------------------
     # Public interface
@@ -124,6 +127,19 @@ class MujocoEnvironment:
         if body_name is None:
             return None
         return self._dist_to_body(body_name)
+
+    def set_camera_params(
+        self,
+        azimuth: float | None = None,
+        elevation: float | None = None,
+        distance: float | None = None,
+    ) -> None:
+        if azimuth is not None:
+            self._cam_azimuth = float(azimuth) % 360
+        if elevation is not None:
+            self._cam_elevation = max(-89.0, min(-5.0, float(elevation)))
+        if distance is not None:
+            self._cam_distance = max(2.0, min(30.0, float(distance)))
 
     def set_visibility(self, factor: float) -> None:
         """Apply mission visibility degradation to the rendered frame."""
@@ -325,9 +341,9 @@ class MujocoEnvironment:
         rx = float(self._data.qpos[0])
         ry = float(self._data.qpos[1])
         cam.lookat[:] = [rx, ry, 0.3]
-        cam.distance = 6.0
-        cam.elevation = -25.0
-        cam.azimuth = 200.0
+        cam.distance = self._cam_distance
+        cam.elevation = self._cam_elevation
+        cam.azimuth = self._cam_azimuth
         self._renderer.update_scene(self._data, camera=cam)
         frame = self._renderer.render()
         img = Image.fromarray(frame).resize(
