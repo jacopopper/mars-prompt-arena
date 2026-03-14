@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from config import Action
 from ui.leaderboard import LeaderboardStore
-from ui.server import create_app
+from ui.server import _execute_action, _reset_session, _run_turn, _start_mission, create_app
 
 
 class WinningBrain:
@@ -36,6 +38,16 @@ class WinningBrain:
         """Expose no special trace metadata for this test double."""
 
         return None
+
+
+class RecordingWebSocket:
+    """Async websocket test double that records outbound payloads."""
+
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+
+    async def send_json(self, payload: dict) -> None:
+        self.messages.append(payload)
 
     def consume_narration_trace(self):
         """Expose no special trace metadata for this test double."""
@@ -65,6 +77,18 @@ class ServerTests(unittest.TestCase):
                 return events
         self.fail("Did not receive the expected websocket event sequence.")
 
+    @staticmethod
+    def _run_async(awaitable):
+        """Run an async helper without waiting on threadpool shutdown."""
+
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(awaitable)
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+
     def test_health_endpoint_reports_runtime_modes(self) -> None:
         """The health endpoint should expose the active runtime modes."""
 
@@ -93,85 +117,58 @@ class ServerTests(unittest.TestCase):
     def test_websocket_turn_sequence_is_stable(self) -> None:
         """Submitting one prompt should emit the expected event ordering."""
 
-        with self.client.websocket_connect("/ws") as websocket:
-            initial_events = self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state",
-            )
-            frame_events = [event for event in initial_events if event["type"] == "frame"]
-            self.assertEqual([event["view"] for event in frame_events], ["robot_pov", "spectator_3d"])
-            self.assertEqual(initial_events[-1]["type"], "mission_state")
+        session = self.client.app.state.session
+        session.player_name = "Pilot"
+        session.env.render_views = lambda: {"robot_pov": b"robot", "spectator_3d": b"spectator"}  # type: ignore[attr-defined]
+        websocket = RecordingWebSocket()
 
-            websocket.send_json({"type": "set_player_name", "player_name": "Pilot"})
-            self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state" and payload["player_name"] == "Pilot",
-            )
+        self._run_async(_start_mission(websocket, session, "wake_up"))
+        mission_events = list(websocket.messages)
+        mission_frame_events = [event for event in mission_events if event["type"] == "frame"]
+        self.assertEqual([event["view"] for event in mission_frame_events], ["robot_pov", "spectator_3d"])
+        state = mission_events[-1]
+        self.assertEqual(state["type"], "mission_state")
+        self.assertEqual(state["mission_id"], "wake_up")
 
-            websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
-            mission_events = self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state" and payload["mission_id"] == "wake_up",
-            )
-            mission_frame_events = [event for event in mission_events if event["type"] == "frame"]
-            self.assertEqual([event["view"] for event in mission_frame_events], ["robot_pov", "spectator_3d"])
-            state = mission_events[-1]
-            self.assertEqual(state["type"], "mission_state")
-            self.assertEqual(state["mission_id"], "wake_up")
-
-            websocket.send_json({"type": "submit_prompt", "prompt": "Stand up and move forward."})
-            events = self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state" and not payload["prompt_in_flight"],
-            )
-            event_types = [event["type"] for event in events]
-            self.assertEqual(event_types[:3], ["mission_state", "tool_trace", "mission_state"])
-            frame_events = [event for event in events if event["type"] == "frame"]
-            self.assertGreaterEqual(len(frame_events), 2)
-            self.assertTrue({event["view"] for event in frame_events}.issubset({"robot_pov", "spectator_3d"}))
-            self.assertIn("narration", event_types)
-            self.assertEqual(event_types[-1], "mission_state")
-            final_state = events[-1]
-            self.assertFalse(final_state["prompt_in_flight"])
-            self.assertEqual(final_state["phase"], "idle")
-            self.assertEqual(final_state["prompt_history"][0]["prompt"], "Stand up and move forward.")
-            self.assertIn("last_raw_plan_calls", final_state)
-            self.assertIn("last_accepted_plan_actions", final_state)
+        websocket.messages.clear()
+        self._run_async(_run_turn(websocket, session, "Stand up and move forward."))
+        events = list(websocket.messages)
+        event_types = [event["type"] for event in events]
+        self.assertEqual(event_types[:3], ["mission_state", "tool_trace", "mission_state"])
+        frame_events = [event for event in events if event["type"] == "frame"]
+        self.assertGreaterEqual(len(frame_events), 2)
+        self.assertTrue({event["view"] for event in frame_events}.issubset({"robot_pov", "spectator_3d"}))
+        self.assertIn("narration", event_types)
+        self.assertEqual(event_types[-1], "mission_state")
+        final_state = events[-1]
+        self.assertFalse(final_state["prompt_in_flight"])
+        self.assertEqual(final_state["phase"], "idle")
+        self.assertEqual(final_state["prompt_history"][0]["prompt"], "Stand up and move forward.")
+        self.assertIn("last_raw_plan_calls", final_state)
+        self.assertIn("last_accepted_plan_actions", final_state)
 
     def test_reset_session_clears_history_for_active_mission(self) -> None:
         """Resetting an active mission should clear prompt and narration history."""
 
-        with self.client.websocket_connect("/ws") as websocket:
-            self._receive_until(websocket, lambda payload, _: payload["type"] == "mission_state")
-            websocket.send_json({"type": "set_player_name", "player_name": "Pilot"})
-            self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state" and payload["player_name"] == "Pilot",
-            )
-            websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
-            self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state" and payload["mission_id"] == "wake_up",
-            )
+        session = self.client.app.state.session
+        session.player_name = "Pilot"
+        session.env.render_views = lambda: {"robot_pov": b"robot", "spectator_3d": b"spectator"}  # type: ignore[attr-defined]
+        websocket = RecordingWebSocket()
 
-            websocket.send_json({"type": "submit_prompt", "prompt": "Stand up and move forward."})
-            self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state" and not payload["prompt_in_flight"],
-            )
+        self._run_async(_start_mission(websocket, session, "wake_up"))
+        websocket.messages.clear()
+        self._run_async(_run_turn(websocket, session, "Stand up and move forward."))
 
-            websocket.send_json({"type": "reset_session"})
-            reset_events = self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state",
-            )
-            reset_frame_events = [event["view"] for event in reset_events if event["type"] == "frame"]
-            self.assertEqual(reset_frame_events, ["robot_pov", "spectator_3d"])
-            state = reset_events[-1]
-            self.assertEqual(state["type"], "mission_state")
-            self.assertEqual(state["prompt_history"], [])
-            self.assertEqual(state["narration_log"], [])
-            self.assertEqual(state["phase"], "idle")
+        websocket.messages.clear()
+        self._run_async(_reset_session(websocket, session))
+        reset_events = list(websocket.messages)
+        reset_frame_events = [event["view"] for event in reset_events if event["type"] == "frame"]
+        self.assertEqual(reset_frame_events, ["robot_pov", "spectator_3d"])
+        state = reset_events[-1]
+        self.assertEqual(state["type"], "mission_state")
+        self.assertEqual(state["prompt_history"], [])
+        self.assertEqual(state["narration_log"], [])
+        self.assertEqual(state["phase"], "idle")
 
     def test_storm_state_exposes_countdown(self) -> None:
         """Starting Storm should expose timer data to the frontend HUD."""
@@ -193,7 +190,7 @@ class ServerTests(unittest.TestCase):
             state = events[-1]
             self.assertEqual(state["type"], "mission_state")
             self.assertEqual(state["mission_id"], "storm")
-            self.assertEqual(state["timer_seconds_remaining"], 120)
+        self.assertEqual(state["timer_seconds_remaining"], 120)
 
     def test_snapshot_emits_both_views_when_environment_supports_render_views(self) -> None:
         """The websocket snapshot should carry both named views when available."""
@@ -288,28 +285,15 @@ class ServerTests(unittest.TestCase):
 
         session = self.client.app.state.session
         session.brain = WinningBrain()
+        session.player_name = "Pilot"
+        session.env.render_views = lambda: {"robot_pov": b"robot", "spectator_3d": b"spectator"}  # type: ignore[attr-defined]
+        websocket = RecordingWebSocket()
 
-        with self.client.websocket_connect("/ws") as websocket:
-            self._receive_until(websocket, lambda payload, _: payload["type"] == "mission_state")
-            websocket.send_json({"type": "set_player_name", "player_name": "Pilot"})
-            self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state" and payload["player_name"] == "Pilot",
-            )
-            websocket.send_json({"type": "start_mission", "mission_id": "wake_up"})
-            self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_state" and payload["mission_id"] == "wake_up",
-            )
+        self._run_async(_start_mission(websocket, session, "wake_up"))
+        websocket.messages.clear()
+        self._run_async(_run_turn(websocket, session, "Reach the base habitat."))
 
-            websocket.send_json({"type": "submit_prompt", "prompt": "Reach the base habitat."})
-            events = self._receive_until(
-                websocket,
-                lambda payload, _: payload["type"] == "mission_end",
-                limit=40,
-            )
-
-        mission_end = events[-1]
+        mission_end = [event for event in websocket.messages if event["type"] == "mission_end"][-1]
         self.assertEqual(mission_end["status"], "win")
         self.assertEqual(mission_end["player_name"], "Pilot")
         self.assertEqual(mission_end["mission_id"], "wake_up")
@@ -317,3 +301,30 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(mission_end["next_mission_id"], "storm")
         self.assertTrue(mission_end["win_flag_raised"])
         self.assertEqual(mission_end["leaderboard"][0]["player_name"], "Pilot")
+
+    def test_execute_action_streams_multiple_frame_events(self) -> None:
+        """The server helper should emit intermediate frame updates for streamed motion."""
+
+        websocket = RecordingWebSocket()
+        env = self.client.app.state.session.env
+        env.render_views = lambda: {"robot_pov": b"robot", "spectator_3d": b"spectator"}  # type: ignore[attr-defined]
+        state = env.reset("storm")
+        session = SimpleNamespace(
+            env=env,
+            dispatcher=self.client.app.state.session.dispatcher,
+            robot_state=state,
+            available_views=[],
+        )
+
+        result = self._run_async(
+            _execute_action(
+                websocket,
+                session,
+                Action("walk", {"direction": "forward", "speed": 0.4, "duration": 2.0}),
+                state,
+            )
+        )
+
+        frame_events = [message for message in websocket.messages if message["type"] == "frame"]
+        self.assertTrue(result.success)
+        self.assertGreater(len(frame_events), 2)

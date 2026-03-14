@@ -2,17 +2,19 @@
   <include file="go2.xml"/>
 
   <visual>
-    <headlight diffuse="0.65 0.38 0.18" ambient="0.28 0.11 0.04" specular="0 0 0"/>
-    <rgba haze="0.28 0.13 0.05 1"/>
-    <global azimuth="-130" elevation="-20" offwidth="2560" offheight="1440"/>
+    <headlight diffuse="0.62 0.36 0.16" ambient="0.18 0.08 0.03" specular="0.04 0.02 0.01"/>
+    <rgba haze="0.24 0.11 0.04 1"/>
+    <global azimuth="-130" elevation="-18" offwidth="3072" offheight="1728"/>
   </visual>
 
   <asset>
-    <texture type="skybox" builtin="gradient" rgb1="0.42 0.14 0.04" rgb2="0.03 0.01 0.0" width="512" height="3072"/>
-    <material name="mars_ground" rgba="0.42 0.18 0.08 1" reflectance="0.03"/>
-    <material name="wreck_mat" rgba="0.48 0.14 0.09 1"/>
-    <material name="rock_mat" rgba="0.42 0.2 0.1 1"/>
-    <material name="rock_dark" rgba="0.24 0.09 0.04 1"/>
+    <texture type="skybox" builtin="gradient" rgb1="0.56 0.20 0.07" rgb2="0.04 0.01 0.0" width="512" height="3072"/>
+    <material name="mars_ground" rgba="0.44 0.20 0.09 1" reflectance="0.04"/>
+    <material name="wreck_mat" rgba="0.46 0.15 0.10 1" specular="0.12" shininess="0.22"/>
+    <material name="wreck_metal" rgba="0.34 0.30 0.28 1" specular="0.24" shininess="0.54"/>
+    <material name="rock_mat" rgba="0.44 0.21 0.11 1"/>
+    <material name="rock_dark" rgba="0.24 0.10 0.05 1"/>
+    <material name="mesa_mat" rgba="0.21 0.10 0.05 1"/>
     <hfield name="terrain" nrow="64" ncol="64" size="30 30 0.5 0.1"/>
   </asset>
 
@@ -21,11 +23,15 @@
     <light pos="-5 5 6" dir="0.4 -0.4 -1" directional="true" diffuse="0.28 0.13 0.05" specular="0 0 0"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="mars_ground"/>
     <geom type="hfield" hfield="terrain" material="mars_ground" contype="0" conaffinity="0"/>
+    <geom type="box" size="15 2.0 2.3" pos="0 18 2.3" euler="0 6 0" material="mesa_mat" contype="0" conaffinity="0"/>
+    <geom type="capsule" size="1.8 8.4" pos="-18 8 2.5" euler="0 20 86" material="mesa_mat" contype="0" conaffinity="0"/>
+    <geom type="capsule" size="1.8 9.0" pos="18 -8 2.7" euler="0 18 98" material="mesa_mat" contype="0" conaffinity="0"/>
 
     <!-- wreck 1 -->
     <body name="wreck_1" pos="5 3 0">
       <geom type="cylinder" size="0.35 0.25" pos="0 0 0.25" material="wreck_mat"/>
       <geom type="box" size="0.2 0.05 0.4" pos="0.1 0 0.6" euler="0 15 0" material="wreck_mat"/>
+      <geom type="box" size="0.45 0.02 0.22" pos="-0.45 0.0 0.44" euler="0 12 18" material="wreck_metal"/>
       <geom name="wreck_1_beacon" type="sphere" size="0.1" pos="0 0 0.7" rgba="1.0 0.3 0.1 1" contype="0" conaffinity="0"/>
     </body>
 
@@ -33,6 +39,7 @@
     <body name="wreck_2" pos="-3 7 0">
       <geom type="cylinder" size="0.35 0.25" pos="0 0 0.25" material="wreck_mat"/>
       <geom type="box" size="0.05 0.2 0.4" pos="0 0.1 0.6" euler="10 0 0" material="wreck_mat"/>
+      <geom type="box" size="0.42 0.02 0.18" pos="0.0 -0.42 0.42" euler="0 8 -26" material="wreck_metal"/>
       <geom name="wreck_2_beacon" type="sphere" size="0.1" pos="0 0 0.7" rgba="1.0 0.3 0.1 1" contype="0" conaffinity="0"/>
     </body>
 
@@ -40,6 +47,7 @@
     <body name="wreck_3" pos="9 -4 0">
       <geom type="cylinder" size="0.35 0.25" pos="0 0 0.25" material="wreck_mat"/>
       <geom type="box" size="0.15 0.05 0.35" pos="-0.1 0 0.55" euler="0 -20 0" material="wreck_mat"/>
+      <geom type="box" size="0.36 0.02 0.16" pos="0.34 0.18 0.42" euler="0 -12 22" material="wreck_metal"/>
       <geom name="wreck_3_beacon" type="sphere" size="0.1" pos="0 0 0.7" rgba="1.0 0.3 0.1 1" contype="0" conaffinity="0"/>
     </body>
 
@@ -75,5 +83,8 @@
     <geom type="box" size="0.8 0.5 0.65" pos="13 5 0.65" euler="0 0 15" material="rock_mat" contype="0" conaffinity="0"/>
     <geom type="capsule" size="0.4 0.65" pos="2 -9 0.65" euler="25 0 55" material="rock_mat" contype="0" conaffinity="0"/>
     <geom type="sphere" size="0.32" pos="1.5 -8.5 0.32" material="rock_dark" contype="0" conaffinity="0"/>
+    <geom type="box" size="0.24 0.10 0.18" pos="4.2 2.4 0.18" euler="0 0 32" material="wreck_metal"/>
+    <geom type="box" size="0.22 0.10 0.14" pos="-2.4 6.2 0.14" euler="0 0 -18" material="wreck_metal"/>
+    <geom type="capsule" size="0.12 0.24" pos="8.4 -3.2 0.24" euler="18 0 26" material="wreck_metal"/>
   </worldbody>
 </mujoco>

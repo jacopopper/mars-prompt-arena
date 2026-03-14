@@ -38,6 +38,20 @@ class FakeEnvironmentTests(unittest.TestCase):
 
         self.assertNotEqual(initial_frame, updated_frame)
 
+    def test_walk_execute_stream_yields_intermediate_updates(self) -> None:
+        """Walking should expose multiple intermediate states for UI streaming."""
+
+        env = FakeEnvironment()
+        env.reset("storm")
+
+        updates = list(env.execute_stream(Action("walk", {"direction": "forward", "speed": 0.4, "duration": 2.0})))
+
+        self.assertGreater(len(updates), 1)
+        final_result, final_delay = updates[-1]
+        self.assertEqual(final_delay, 0.0)
+        self.assertTrue(final_result.success)
+        self.assertGreater(final_result.new_state.position[0], 0.0)
+
 
 class MissionTests(unittest.TestCase):
     """Verify mission budget, success, and discovery flows."""

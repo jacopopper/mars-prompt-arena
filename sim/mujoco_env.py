@@ -1,6 +1,7 @@
 import io
 import math
 import os
+from collections.abc import Iterator
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 import mujoco
@@ -35,6 +36,23 @@ TARGET_FOOTPRINTS = {
     },
 }
 
+MISSION_TERRAIN_CLEARANCE = {
+    "wake_up": (
+        ((0.0, 0.0), 8.0, 0.22),
+        ((10.0, 0.0), 4.5, 0.16),
+    ),
+    "storm": (
+        ((0.0, 0.0), 8.0, 0.18),
+        ((8.0, 5.0), 4.0, 0.14),
+    ),
+    "signal": (
+        ((0.0, 0.0), 8.0, 0.18),
+        ((5.0, 3.0), 2.8, 0.10),
+        ((-3.0, 7.0), 2.8, 0.10),
+        ((9.0, -4.0), 2.8, 0.10),
+    ),
+}
+
 SIGNAL_BEACON_GEOMS = {
     "wreck_1": "wreck_1_beacon",
     "wreck_2": "wreck_2_beacon",
@@ -65,6 +83,7 @@ class MujocoEnvironment:
         self._cam_azimuth: float = 200.0
         self._cam_elevation: float = -25.0
         self._cam_distance: float = 6.0
+        self.stream_delay_scale: float = 1.0
 
     # ------------------------------------------------------------------
     # Public interface
@@ -79,6 +98,7 @@ class MujocoEnvironment:
             self._renderer.close()
 
         scene = SCENE_PATH[mission_id]
+        self._mission_id = mission_id
         self._model = mujoco.MjModel.from_xml_path(scene)
         self._data  = mujoco.MjData(self._model)
         self._inject_terrain()
@@ -90,7 +110,6 @@ class MujocoEnvironment:
             height=self._out_h * _SS,
             width=self._out_w * _SS,
         )
-        self._mission_id = mission_id
         self._scanned = set()
         self._reached = set()
         self._visibility = 1.0
@@ -108,16 +127,33 @@ class MujocoEnvironment:
         return self._state()
 
     def execute(self, action: Action) -> ActionResult:
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self.execute_stream(action):
+            pass
+        if final_result is not None:
+            return final_result
+        return ActionResult(False, f"Unknown skill: {action.skill}", self._state())
+
+    def execute_stream(self, action: Action) -> Iterator[tuple[ActionResult, float]]:
+        """Yield intermediate action states so the UI can animate motion."""
+
         match action.skill:
-            case "stand":      return self._stand()
-            case "sit":        return self._sit()
-            case "walk":       return self._walk(**action.params)
-            case "turn":       return self._turn(**action.params)
-            case "scan":       return self._scan()
-            case "navigate_to": return self._navigate_to(**action.params)
-            case "report":     return ActionResult(True, self._describe(), self._state())
+            case "stand":
+                yield from self._stand_stream()
+            case "sit":
+                yield from self._sit_stream()
+            case "walk":
+                yield from self._walk_stream(**action.params)
+            case "turn":
+                yield from self._turn_stream(**action.params)
+            case "scan":
+                yield self._scan(), 0.0
+            case "navigate_to":
+                yield from self._navigate_to_stream(**action.params)
+            case "report":
+                yield ActionResult(True, self._describe(), self._state()), 0.0
             case _:
-                return ActionResult(False, f"Unknown skill: {action.skill}", self._state())
+                yield ActionResult(False, f"Unknown skill: {action.skill}", self._state()), 0.0
 
     def render(self) -> bytes:
         self._refresh_signal_reached_targets()
@@ -186,24 +222,54 @@ class MujocoEnvironment:
         nrow = int(self._model.hfield_nrow[hfield_id])
         ncol = int(self._model.hfield_ncol[hfield_id])
 
-        # Deterministic per mission so each mission has a distinct terrain
-        rng = np.random.default_rng(hash(self._mission_id) % (2 ** 32))
+        # Deterministic per mission so each scene keeps its own recognizable terrain.
+        rng = np.random.default_rng(abs(hash(self._mission_id)) % (2**32))
 
-        x = np.linspace(0, 5 * np.pi, ncol)
-        y = np.linspace(0, 5 * np.pi, nrow)
+        x = np.linspace(-1.0, 1.0, ncol)
+        y = np.linspace(-1.0, 1.0, nrow)
         xx, yy = np.meshgrid(x, y)
 
-        # Multi-frequency sine waves + small noise → organic rolling terrain
         h = (
-            0.30 * np.sin(xx * 0.6) * np.cos(yy * 0.5)
-            + 0.20 * np.cos(xx * 1.2 + 0.9) * np.sin(yy * 1.0)
-            + 0.12 * np.sin(xx * 2.3 + 1.4) * np.cos(yy * 2.1 + 0.7)
-            + 0.08 * rng.standard_normal((nrow, ncol))
+            0.34 * np.sin(xx * 3.1) * np.cos(yy * 2.7)
+            + 0.24 * np.cos(xx * 6.4 + 0.9) * np.sin(yy * 4.8)
+            + 0.12 * np.sin((xx + yy) * 10.0 + 0.6)
+            + 0.06 * rng.standard_normal((nrow, ncol))
         )
 
-        # Normalise to [0, 1] then scale down (max ~30% of z_scale → ~15 cm bumps)
+        if self._mission_id == "wake_up":
+            landing_basin = np.exp(-(((xx + 0.10) / 0.40) ** 2 + ((yy + 0.04) / 0.24) ** 2))
+            base_ridge = np.exp(-(((xx - 0.34) / 0.24) ** 2 + ((yy - 0.02) / 0.14) ** 2))
+            h -= 0.28 * landing_basin
+            h += 0.18 * base_ridge
+        elif self._mission_id == "storm":
+            dune_band = np.sin((xx * 11.0) + (yy * 4.0) + 0.8)
+            dune_falloff = np.exp(-((yy + 0.05) ** 2) / 0.55)
+            lee_ridge = np.exp(-(((xx - 0.28) / 0.22) ** 2 + ((yy + 0.12) / 0.18) ** 2))
+            h += 0.16 * dune_band * dune_falloff
+            h += 0.12 * lee_ridge
+        elif self._mission_id == "signal":
+            crater_a = np.exp(-(((xx + 0.24) / 0.22) ** 2 + ((yy - 0.12) / 0.18) ** 2))
+            crater_b = np.exp(-(((xx - 0.30) / 0.18) ** 2 + ((yy + 0.22) / 0.16) ** 2))
+            rim = np.exp(-(((xx + 0.02) / 0.55) ** 2 + ((yy + 0.28) / 0.10) ** 2))
+            h -= 0.20 * crater_a
+            h -= 0.14 * crater_b
+            h += 0.16 * rim
+
+        # Normalize and bias toward broader readable relief rather than noisy bumps.
         h = (h - h.min()) / (h.max() - h.min() + 1e-9)
-        h = h * 0.30
+        h = np.power(h, 1.35) * 0.48
+
+        # Keep the visual terrain lower around spawn and key mission locations so
+        # the robot and targets do not look sunk into a purely decorative hfield.
+        for (world_x, world_y), radius_m, depth in MISSION_TERRAIN_CLEARANCE.get(self._mission_id, ()):
+            nx = world_x / 30.0
+            ny = world_y / 30.0
+            rx = max(radius_m / 30.0, 1e-6)
+            ry = rx * 0.85
+            clearance = np.exp(-(((xx - nx) / rx) ** 2 + ((yy - ny) / ry) ** 2))
+            h -= depth * clearance
+
+        h = np.clip(h, 0.0, 0.48)
 
         adr = int(self._model.hfield_adr[hfield_id])
         self._model.hfield_data[adr : adr + nrow * ncol] = h.astype(np.float32).flatten()
@@ -213,41 +279,28 @@ class MujocoEnvironment:
     # ------------------------------------------------------------------
 
     def _stand(self) -> ActionResult:
-        self._target_qpos = self._stand_qpos.copy()
-        self._settle(200)
-        return ActionResult(True, "Standing up.", self._state())
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self._stand_stream():
+            pass
+        return final_result or ActionResult(False, "Stand failed.", self._state())
 
     def _sit(self) -> ActionResult:
-        self._target_qpos = self._sit_qpos.copy()
-        self._settle(200)
-        return ActionResult(True, "Sitting down.", self._state())
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self._sit_stream():
+            pass
+        return final_result or ActionResult(False, "Sit failed.", self._state())
 
     def _walk(self, direction: str = "forward", speed: float = 0.4, duration: float = 2.0) -> ActionResult:
-        """Move the robot in the body frame using a stable planar pose update."""
-
-        dist = speed * duration
-        dx_body = {"forward": 1.0, "backward": -1.0, "left": 0.0, "right": 0.0}.get(direction, 0.0)
-        dy_body = {"forward": 0.0, "backward": 0.0, "left": 1.0, "right": -1.0}.get(direction, 0.0)
-
-        yaw = self._yaw()
-        dx_world = (dx_body * math.cos(yaw) - dy_body * math.sin(yaw)) * dist
-        dy_world = (dx_body * math.sin(yaw) + dy_body * math.cos(yaw)) * dist
-        self._set_planar_pose(
-            x=float(self._data.qpos[0]) + dx_world,
-            y=float(self._data.qpos[1]) + dy_world,
-        )
-        self._settle(40)
-        self._refresh_signal_reached_targets()
-        return ActionResult(True, f"Walked {direction} ~{speed * duration:.1f}m.", self._state())
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self._walk_stream(direction=direction, speed=speed, duration=duration):
+            pass
+        return final_result or ActionResult(False, "Walk failed.", self._state())
 
     def _turn(self, angle_deg: float = 0.0) -> ActionResult:
-        """Rotate the robot in place with a direct yaw update."""
-
-        next_yaw = self._yaw() + math.radians(angle_deg)
-        self._set_planar_pose(yaw=next_yaw)
-        self._settle(40)
-        self._refresh_signal_reached_targets()
-        return ActionResult(True, f"Turned {angle_deg:+.0f}°.", self._state())
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self._turn_stream(angle_deg=angle_deg):
+            pass
+        return final_result or ActionResult(False, "Turn failed.", self._state())
 
     def _scan(self) -> ActionResult:
         targets = MISSION_TARGETS.get(self._mission_id, {})
@@ -269,27 +322,10 @@ class MujocoEnvironment:
         return ActionResult(True, msg, self._state())
 
     def _navigate_to(self, target_id: str = "") -> ActionResult:
-        targets = MISSION_TARGETS.get(self._mission_id, {})
-        if target_id not in targets:
-            return ActionResult(False, f"Unknown target: {target_id}", self._state())
-        if target_id not in self._scanned:
-            return ActionResult(False, f"{target_id} not yet discovered. Use scan first.", self._state())
-
-        body_name = targets[target_id]
-        tx, ty = self._target_reference_point(target_id) or self._body_pos_xy(body_name)
-        rx, ry = float(self._data.qpos[0]), float(self._data.qpos[1])
-        dx, dy = tx - rx, ty - ry
-        norm = math.sqrt(dx**2 + dy**2) + 1e-6
-        offset = min(0.5, max(0.0, MissionConfig.WIN_DISTANCE_METERS - 0.05))
-        self._set_planar_pose(
-            x=tx - (dx / norm) * offset,
-            y=ty - (dy / norm) * offset,
-        )
-        self._settle(100)
-        self._refresh_signal_reached_targets()
-
-        final_dist = self.get_distance_to(target_id)
-        return ActionResult(True, f"Navigated to {target_id}. Distance: {final_dist:.1f}m.", self._state())
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self._navigate_to_stream(target_id=target_id):
+            pass
+        return final_result or ActionResult(False, "Navigation failed.", self._state())
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -300,6 +336,10 @@ class MujocoEnvironment:
             self._apply_pd()
             mujoco.mj_step(self._model, self._data)
 
+    def _settle_for_seconds(self, duration_seconds: float) -> None:
+        steps = max(1, int(round(duration_seconds * SimConfig.CONTROL_HZ)))
+        self._settle(steps)
+
     def _apply_pd(self) -> None:
         q   = self._data.qpos[7:19]
         dq  = self._data.qvel[6:18]
@@ -308,6 +348,127 @@ class MujocoEnvironment:
     def _move_joints(self, target_qpos: np.ndarray, steps: int) -> None:
         self._target_qpos = target_qpos.copy()
         self._settle(steps)
+
+    def _stand_stream(self) -> Iterator[tuple[ActionResult, float]]:
+        yield from self._joint_motion_stream(
+            target_qpos=self._stand_qpos,
+            duration_seconds=0.8,
+            final_message="Standing up.",
+        )
+
+    def _sit_stream(self) -> Iterator[tuple[ActionResult, float]]:
+        yield from self._joint_motion_stream(
+            target_qpos=self._sit_qpos,
+            duration_seconds=0.8,
+            final_message="Sitting down.",
+        )
+
+    def _joint_motion_stream(
+        self,
+        *,
+        target_qpos: np.ndarray,
+        duration_seconds: float,
+        final_message: str,
+    ) -> Iterator[tuple[ActionResult, float]]:
+        start_qpos = self._data.qpos[7:19].copy()
+        steps = max(1, int(round(duration_seconds * SimConfig.CAMERA_FPS)))
+        delay_seconds = duration_seconds / steps if steps > 0 else 0.0
+
+        for step_index in range(1, steps + 1):
+            alpha = step_index / steps
+            self._target_qpos = start_qpos + (target_qpos - start_qpos) * alpha
+            self._settle_for_seconds(delay_seconds)
+            self._refresh_signal_reached_targets()
+            message = final_message if step_index == steps else "Adjusting posture..."
+            yield ActionResult(True, message, self._state()), (0.0 if step_index == steps else delay_seconds)
+
+    def _walk_stream(
+        self,
+        direction: str = "forward",
+        speed: float = 0.4,
+        duration: float = 2.0,
+    ) -> Iterator[tuple[ActionResult, float]]:
+        """Move the robot in the body frame using stable incremental pose updates."""
+
+        dist = speed * duration
+        dx_body = {"forward": 1.0, "backward": -1.0, "left": 0.0, "right": 0.0}.get(direction, 0.0)
+        dy_body = {"forward": 0.0, "backward": 0.0, "left": 1.0, "right": -1.0}.get(direction, 0.0)
+
+        yaw = self._yaw()
+        total_dx = (dx_body * math.cos(yaw) - dy_body * math.sin(yaw)) * dist
+        total_dy = (dx_body * math.sin(yaw) + dy_body * math.cos(yaw)) * dist
+        start_x = float(self._data.qpos[0])
+        start_y = float(self._data.qpos[1])
+        steps = max(1, int(round(duration * SimConfig.CAMERA_FPS)))
+        delay_seconds = duration / steps if steps > 0 else 0.0
+
+        for step_index in range(1, steps + 1):
+            alpha = step_index / steps
+            self._set_planar_pose(
+                x=start_x + total_dx * alpha,
+                y=start_y + total_dy * alpha,
+            )
+            self._settle_for_seconds(delay_seconds)
+            self._refresh_signal_reached_targets()
+            message = (
+                f"Walked {direction} ~{dist:.1f}m."
+                if step_index == steps
+                else f"Walking {direction}..."
+            )
+            yield ActionResult(True, message, self._state()), (0.0 if step_index == steps else delay_seconds)
+
+    def _turn_stream(self, angle_deg: float = 0.0) -> Iterator[tuple[ActionResult, float]]:
+        """Rotate the robot in place with incremental yaw updates."""
+
+        duration = max(0.3, abs(angle_deg) / 90.0)
+        start_yaw = self._yaw()
+        steps = max(1, int(round(duration * SimConfig.CAMERA_FPS)))
+        delay_seconds = duration / steps if steps > 0 else 0.0
+
+        for step_index in range(1, steps + 1):
+            alpha = step_index / steps
+            self._set_planar_pose(yaw=start_yaw + math.radians(angle_deg) * alpha)
+            self._settle_for_seconds(delay_seconds)
+            self._refresh_signal_reached_targets()
+            message = f"Turned {angle_deg:+.0f}°." if step_index == steps else "Turning..."
+            yield ActionResult(True, message, self._state()), (0.0 if step_index == steps else delay_seconds)
+
+    def _navigate_to_stream(self, target_id: str = "") -> Iterator[tuple[ActionResult, float]]:
+        targets = MISSION_TARGETS.get(self._mission_id, {})
+        if target_id not in targets:
+            yield ActionResult(False, f"Unknown target: {target_id}", self._state()), 0.0
+            return
+        if target_id not in self._scanned:
+            yield ActionResult(False, f"{target_id} not yet discovered. Use scan first.", self._state()), 0.0
+            return
+
+        body_name = targets[target_id]
+        tx, ty = self._target_reference_point(target_id) or self._body_pos_xy(body_name)
+        rx, ry = float(self._data.qpos[0]), float(self._data.qpos[1])
+        dx, dy = tx - rx, ty - ry
+        norm = math.sqrt(dx**2 + dy**2) + 1e-6
+        offset = min(0.5, max(0.0, MissionConfig.WIN_DISTANCE_METERS - 0.05))
+        final_x = tx - (dx / norm) * offset
+        final_y = ty - (dy / norm) * offset
+        distance = math.sqrt((final_x - rx) ** 2 + (final_y - ry) ** 2)
+        duration = max(0.5, distance / 0.8)
+        steps = max(1, int(round(duration * SimConfig.CAMERA_FPS)))
+        delay_seconds = duration / steps if steps > 0 else 0.0
+
+        for step_index in range(1, steps + 1):
+            alpha = step_index / steps
+            self._set_planar_pose(
+                x=rx + (final_x - rx) * alpha,
+                y=ry + (final_y - ry) * alpha,
+            )
+            self._settle_for_seconds(delay_seconds)
+            self._refresh_signal_reached_targets()
+            message = (
+                f"Navigated to {target_id}. Distance: {self.get_distance_to(target_id):.1f}m."
+                if step_index == steps
+                else f"Navigating to {target_id}..."
+            )
+            yield ActionResult(True, message, self._state()), (0.0 if step_index == steps else delay_seconds)
 
     def _set_planar_pose(
         self,

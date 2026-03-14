@@ -1,9 +1,10 @@
 import io
 import math
+from collections.abc import Iterator
 
 from PIL import Image, ImageDraw
 
-from config import Action, ActionResult, MissionConfig, RobotState
+from config import Action, ActionResult, MissionConfig, RobotState, SimConfig
 
 # World scale: 1 unit = 1 meter. Canvas is 600x600px = 30x30m.
 _PX_PER_M = 20
@@ -72,6 +73,7 @@ class FakeEnvironment:
         self._cam_azimuth: float = 200.0
         self._cam_elevation: float = -25.0
         self._cam_distance: float = 6.0
+        self.stream_delay_scale: float = 0.0
 
     # ------------------------------------------------------------------
     # Public interface (matches mujoco_env.py)
@@ -92,25 +94,35 @@ class FakeEnvironment:
         return self._state()
 
     def execute(self, action: Action) -> ActionResult:
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self.execute_stream(action):
+            pass
+        if final_result is not None:
+            return final_result
+        return ActionResult(False, f"Unknown skill: {action.skill}", self._state())
+
+    def execute_stream(self, action: Action) -> Iterator[tuple[ActionResult, float]]:
+        """Yield intermediate action states so the UI can animate long motions."""
+
         match action.skill:
             case "stand":
                 self._standing = True
-                return ActionResult(True, "Standing up.", self._state())
+                yield ActionResult(True, "Standing up.", self._state()), 0.0
             case "sit":
                 self._standing = False
-                return ActionResult(True, "Sitting down.", self._state())
+                yield ActionResult(True, "Sitting down.", self._state()), 0.0
             case "walk":
-                return self._walk(**action.params)
+                yield from self._walk_stream(**action.params)
             case "turn":
-                return self._turn(**action.params)
+                yield from self._turn_stream(**action.params)
             case "scan":
-                return self._scan()
+                yield self._scan(), 0.0
             case "navigate_to":
-                return self._navigate_to(**action.params)
+                yield from self._navigate_to_stream(**action.params)
             case "report":
-                return ActionResult(True, self._describe(), self._state())
+                yield ActionResult(True, self._describe(), self._state()), 0.0
             case _:
-                return ActionResult(False, f"Unknown skill: {action.skill}", self._state())
+                yield ActionResult(False, f"Unknown skill: {action.skill}", self._state()), 0.0
 
     def render(self) -> bytes:
         return self._draw_frame()
@@ -159,22 +171,16 @@ class FakeEnvironment:
     # ------------------------------------------------------------------
 
     def _walk(self, direction: str = "forward", speed: float = 0.4, duration: float = 2.0) -> ActionResult:
-        dist = speed * duration
-        rad = math.radians(self._yaw)
-        dx_map = {"forward": 1, "backward": -1, "left": 0, "right": 0}
-        dy_map = {"forward": 0, "backward": 0,  "left": 1, "right": -1}
-        dx = dx_map.get(direction, 0)
-        dy = dy_map.get(direction, 0)
-        # rotate by yaw
-        self._x += (dx * math.cos(rad) - dy * math.sin(rad)) * dist
-        self._y += (dx * math.sin(rad) + dy * math.cos(rad)) * dist
-        self._refresh_signal_reached_targets()
-        return ActionResult(True, f"Walked {direction} {dist:.1f}m.", self._state())
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self._walk_stream(direction=direction, speed=speed, duration=duration):
+            pass
+        return final_result or ActionResult(False, "Walk failed.", self._state())
 
     def _turn(self, angle_deg: float = 0.0) -> ActionResult:
-        self._yaw = (self._yaw + angle_deg) % 360
-        self._refresh_signal_reached_targets()
-        return ActionResult(True, f"Turned {angle_deg:+.0f}°. Now facing {self._yaw:.0f}°.", self._state())
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self._turn_stream(angle_deg=angle_deg):
+            pass
+        return final_result or ActionResult(False, "Turn failed.", self._state())
 
     def _scan(self) -> ActionResult:
         found = []
@@ -194,19 +200,85 @@ class FakeEnvironment:
         return ActionResult(True, msg, self._state())
 
     def _navigate_to(self, target_id: str = "") -> ActionResult:
+        final_result: ActionResult | None = None
+        for final_result, _delay_seconds in self._navigate_to_stream(target_id=target_id):
+            pass
+        return final_result or ActionResult(False, "Navigation failed.", self._state())
+
+    def _walk_stream(
+        self,
+        direction: str = "forward",
+        speed: float = 0.4,
+        duration: float = 2.0,
+    ) -> Iterator[tuple[ActionResult, float]]:
+        dist = speed * duration
+        rad = math.radians(self._yaw)
+        dx_map = {"forward": 1, "backward": -1, "left": 0, "right": 0}
+        dy_map = {"forward": 0, "backward": 0, "left": 1, "right": -1}
+        dx = dx_map.get(direction, 0)
+        dy = dy_map.get(direction, 0)
+        total_dx = (dx * math.cos(rad) - dy * math.sin(rad)) * dist
+        total_dy = (dx * math.sin(rad) + dy * math.cos(rad)) * dist
+        steps = max(2, min(6, int(round(duration * SimConfig.CAMERA_FPS))))
+        delay_seconds = duration / steps if steps > 0 else 0.0
+
+        for step_index in range(1, steps + 1):
+            self._x += total_dx / steps
+            self._y += total_dy / steps
+            self._refresh_signal_reached_targets()
+            message = (
+                f"Walked {direction} {dist:.1f}m."
+                if step_index == steps
+                else f"Walking {direction}..."
+            )
+            yield ActionResult(True, message, self._state()), (0.0 if step_index == steps else delay_seconds)
+
+    def _turn_stream(self, angle_deg: float = 0.0) -> Iterator[tuple[ActionResult, float]]:
+        duration = max(0.3, abs(angle_deg) / 90.0)
+        steps = max(2, min(6, int(round(duration * SimConfig.CAMERA_FPS))))
+        delay_seconds = duration / steps if steps > 0 else 0.0
+
+        for step_index in range(1, steps + 1):
+            self._yaw = (self._yaw + (angle_deg / steps)) % 360
+            self._refresh_signal_reached_targets()
+            message = (
+                f"Turned {angle_deg:+.0f}°. Now facing {self._yaw:.0f}°."
+                if step_index == steps
+                else "Turning..."
+            )
+            yield ActionResult(True, message, self._state()), (0.0 if step_index == steps else delay_seconds)
+
+    def _navigate_to_stream(self, target_id: str = "") -> Iterator[tuple[ActionResult, float]]:
         if target_id not in self._targets:
-            return ActionResult(False, f"Unknown target: {target_id}", self._state())
+            yield ActionResult(False, f"Unknown target: {target_id}", self._state()), 0.0
+            return
         if target_id not in self._scanned:
-            return ActionResult(False, f"{target_id} not yet discovered. Use scan first.", self._state())
+            yield ActionResult(False, f"{target_id} not yet discovered. Use scan first.", self._state()), 0.0
+            return
+
         tx, ty = self._target_reference_point(target_id)
         dx, dy = tx - self._x, ty - self._y
         norm = math.sqrt(dx ** 2 + dy ** 2) + 1e-6
         offset = min(0.5, max(0.0, MissionConfig.WIN_DISTANCE_METERS - 0.05))
-        self._x = tx - (dx / norm) * offset
-        self._y = ty - (dy / norm) * offset
-        self._scanned.add(target_id)
-        self._refresh_signal_reached_targets()
-        return ActionResult(True, f"Navigated to {target_id}. Distance: {self.get_distance_to(target_id):.1f}m.", self._state())
+        final_x = tx - (dx / norm) * offset
+        final_y = ty - (dy / norm) * offset
+        distance = math.sqrt((final_x - self._x) ** 2 + (final_y - self._y) ** 2)
+        duration = max(0.5, distance / 0.8)
+        steps = max(2, min(6, int(round(duration * SimConfig.CAMERA_FPS))))
+        delay_seconds = duration / steps if steps > 0 else 0.0
+
+        for step_index in range(1, steps + 1):
+            remaining_steps = steps - step_index + 1
+            self._x += (final_x - self._x) / remaining_steps
+            self._y += (final_y - self._y) / remaining_steps
+            self._scanned.add(target_id)
+            self._refresh_signal_reached_targets()
+            message = (
+                f"Navigated to {target_id}. Distance: {self.get_distance_to(target_id):.1f}m."
+                if step_index == steps
+                else f"Navigating to {target_id}..."
+            )
+            yield ActionResult(True, message, self._state()), (0.0 if step_index == steps else delay_seconds)
 
     # ------------------------------------------------------------------
     # State and rendering

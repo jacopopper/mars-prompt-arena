@@ -2,33 +2,42 @@
   <include file="go2.xml"/>
 
   <visual>
-    <headlight diffuse="0.68 0.60 0.50" ambient="0.24 0.20 0.16" specular="0 0 0"/>
-    <rgba haze="0.50 0.40 0.30 1"/>
-    <global azimuth="-130" elevation="-20" offwidth="2560" offheight="1440"/>
+    <headlight diffuse="0.74 0.66 0.58" ambient="0.16 0.12 0.10" specular="0.04 0.03 0.02"/>
+    <rgba haze="0.42 0.31 0.22 1"/>
+    <global azimuth="-130" elevation="-18" offwidth="3072" offheight="1728"/>
   </visual>
 
   <asset>
-    <texture type="skybox" file="assets/mars_horizon.png" width="1024" height="512"/>
+    <texture type="skybox" builtin="gradient" rgb1="0.76 0.46 0.24" rgb2="0.14 0.06 0.03" width="512" height="3072"/>
     <texture type="2d" name="ground_tex" file="assets/mars_ground.png"/>
-    <material name="mars_ground" texture="ground_tex" texrepeat="8 8" reflectance="0.02"/>
-    <material name="base_mat"   rgba="0.80 0.74 0.62 1"/>
-    <material name="base_metal" rgba="0.52 0.50 0.48 1"/>
-    <material name="rock_mat"   rgba="0.46 0.33 0.22 1"/>
-    <material name="rock_dark"  rgba="0.30 0.24 0.19 1"/>
-    <material name="rock_light" rgba="0.58 0.44 0.30 1"/>
+    <material name="mars_ground" texture="ground_tex" texuniform="true" texrepeat="18 18" reflectance="0.008" rgba="0.84 0.78 0.72 1"/>
+    <material name="base_mat"   rgba="0.83 0.78 0.70 1" specular="0.16" shininess="0.30"/>
+    <material name="base_metal" rgba="0.54 0.52 0.50 1" specular="0.28" shininess="0.65"/>
+    <material name="panel_mat"  rgba="0.18 0.24 0.31 1" specular="0.18" shininess="0.55"/>
+    <material name="rock_mat"   rgba="0.49 0.34 0.22 1" specular="0.05" shininess="0.12"/>
+    <material name="rock_dark"  rgba="0.31 0.23 0.17 1"/>
+    <material name="rock_light" rgba="0.61 0.45 0.29 1"/>
+    <material name="mesa_mat"   rgba="0.28 0.18 0.12 1"/>
     <hfield name="terrain" nrow="64" ncol="64" size="30 30 0.5 0.1"/>
   </asset>
 
   <worldbody>
     <!-- Sun: warm directional, less orange-saturated than before -->
     <light pos="8 -5 14" dir="-0.4 0.3 -1" directional="true"
-           diffuse="0.88 0.76 0.58" specular="0 0 0"/>
-    <!-- Sky fill: cool blue-purple bounce from above -->
+           diffuse="0.92 0.80 0.62" specular="0.12 0.08 0.05"/>
     <light pos="-4 6 8" dir="0.3 -0.4 -1" directional="true"
-           diffuse="0.14 0.17 0.26" specular="0 0 0"/>
+           diffuse="0.20 0.16 0.14" specular="0 0 0"/>
+    <light pos="0 0 12" dir="0.1 -0.2 -1" directional="true"
+           diffuse="0.12 0.09 0.07" specular="0 0 0"/>
 
     <geom name="floor" size="0 0 0.05" type="plane" material="mars_ground"/>
     <geom type="hfield" hfield="terrain" material="mars_ground" contype="0" conaffinity="0"/>
+
+    <!-- distant ridgelines to break the flat horizon -->
+    <geom type="box" size="14 1.8 1.9" pos="0 18 1.9" euler="0 4 0" material="mesa_mat" contype="0" conaffinity="0"/>
+    <geom type="capsule" size="1.4 7.2" pos="-18 9 2.0" euler="0 18 82" material="mesa_mat" contype="0" conaffinity="0"/>
+    <geom type="capsule" size="1.8 8.5" pos="19 -7 2.4" euler="0 16 94" material="mesa_mat" contype="0" conaffinity="0"/>
+    <geom type="box" size="7 1.1 1.5" pos="-12 -18 1.5" euler="0 -6 12" material="mesa_mat" contype="0" conaffinity="0"/>
 
     <!-- Base habitat (win target) — beige/metal instead of blue -->
     <body name="base_target" pos="10 0 0">
@@ -49,6 +58,21 @@
       <!-- Solar panel -->
       <geom type="box" size="0.8 0.05 0.5" pos="0 0 2.35"
             euler="10 0 0" material="base_metal"/>
+      <!-- solar wings -->
+      <geom type="box" size="0.95 0.03 0.62" pos="-2.25 0.15 1.45"
+            euler="0 18 8" material="panel_mat"/>
+      <geom type="box" size="0.95 0.03 0.62" pos=" 2.25 0.15 1.45"
+            euler="0 -18 -8" material="panel_mat"/>
+      <geom type="cylinder" size="0.05 1.1" pos="-1.35 0.15 1.12" material="base_metal"/>
+      <geom type="cylinder" size="0.05 1.1" pos=" 1.35 0.15 1.12" material="base_metal"/>
+      <!-- comms mast -->
+      <geom type="cylinder" size="0.05 1.55" pos="1.95 1.15 1.55" material="base_metal"/>
+      <geom type="box" size="0.38 0.03 0.22" pos="1.95 1.15 3.15"
+            euler="18 0 42" material="panel_mat" contype="0" conaffinity="0"/>
+      <geom type="sphere" size="0.08" pos="1.95 1.15 3.28" rgba="0.92 0.86 0.68 1" contype="0" conaffinity="0"/>
+      <!-- side service pod -->
+      <geom type="capsule" size="0.45 0.82" pos="-1.8 1.05 0.92"
+            euler="0 90 0" material="base_metal"/>
     </body>
 
     <!-- cluster 1 -->
@@ -76,5 +100,7 @@
     <geom type="box"     size="0.60 0.40 0.50" pos="13 -5 0.50" euler="0 0 -30" material="rock_light" contype="0" conaffinity="0"/>
     <geom type="capsule" size="0.35 0.50" pos="-6 -4 0.50"   euler="15 0 70"  material="rock_mat"   contype="0" conaffinity="0"/>
     <geom type="sphere"  size="0.45"      pos="14 3 0.45"                     material="rock_dark"  contype="0" conaffinity="0"/>
+    <geom type="box"     size="0.42 0.42 0.28" pos="7.2 -3.7 0.28" euler="0 0 15" material="base_metal"/>
+    <geom type="box"     size="0.30 0.18 0.24" pos="7.9 -3.2 0.24" euler="0 0 -18" material="base_mat"/>
   </worldbody>
 </mujoco>

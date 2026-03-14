@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from agent.base import Brain, BrainError
 from agent.dispatcher import Dispatcher
 from agent.mock_brain import MockBrain
-from agent.tools import TOOL_SPECS, build_tool_trace
+from agent.tools import TOOL_SPECS, build_tool_trace, validate_action
 from config import Action, LeaderboardConfig, MissionConfig, MissionStatus, RobotState
 from missions.base import MISSION_LABELS, Mission, mission_from_id, next_mission_id
 from sim.fake_env import FakeEnvironment
@@ -396,11 +396,7 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
         results = []
         latest_state = session.robot_state
         for index, action in enumerate(actions, start=1):
-            result = session.dispatcher.execute(
-                action,
-                session.env,
-                latest_state,
-            )
+            result = await _execute_action(websocket, session, action, latest_state)
             results.append(result)
             latest_state = result.new_state
             session.robot_state = latest_state
@@ -915,6 +911,43 @@ def _normalize_debug_args(raw_args: Any) -> dict[str, Any]:
     if raw_args in (None, ""):
         return {}
     return {"value": raw_args}
+
+
+async def _execute_action(
+    websocket: WebSocket,
+    session: SessionState,
+    action: Action,
+    current_state: RobotState,
+) -> ActionResult:
+    """Execute one action, streaming intermediate frames when the env supports it."""
+
+    validation_error = validate_action(action)
+    if validation_error is not None:
+        return ActionResult(
+            success=False,
+            message=f"Validation failed for '{action.skill}': {validation_error}",
+            new_state=current_state,
+        )
+
+    execute_stream = getattr(session.env, "execute_stream", None)
+    if not callable(execute_stream):
+        return session.dispatcher.execute(action, session.env, current_state)
+
+    final_result: ActionResult | None = None
+    delay_scale = float(getattr(session.env, "stream_delay_scale", 1.0))
+    for streamed_result, delay_seconds in execute_stream(action):
+        final_result = streamed_result
+        session.robot_state = streamed_result.new_state
+        await _emit_views(websocket, session, streamed_result.new_state)
+        effective_delay = max(0.0, delay_seconds * delay_scale)
+        if effective_delay > 0:
+            await asyncio.sleep(effective_delay)
+
+    return final_result or ActionResult(
+        success=False,
+        message=f"Environment produced no result for '{action.skill}'.",
+        new_state=current_state,
+    )
 
 
 app = create_app()
