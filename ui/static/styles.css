@@ -89,17 +89,22 @@ h1 {
 .control-panel,
 .hud-panel,
 .trace-panel,
-.history-panel {
+.history-panel,
+.debug-panel {
   min-height: 250px;
 }
 
-.camera-panel {
+.views-panel {
   grid-column: 2 / 3;
   grid-row: span 2;
 }
 
 .narration-panel {
   grid-column: 2 / 4;
+}
+
+.debug-panel {
+  grid-column: 1 / 2;
 }
 
 .panel-header {
@@ -202,7 +207,35 @@ h1 {
   cursor: not-allowed;
 }
 
+.views-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 14px;
+}
+
+.view-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.view-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.view-card-header h3,
+.view-card-header p {
+  margin: 0;
+}
+
+.view-card-header p {
+  color: var(--muted);
+}
+
 .camera-frame {
+  position: relative;
   min-height: 520px;
   border-radius: 22px;
   overflow: hidden;
@@ -215,6 +248,21 @@ h1 {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.spectator-frame {
+  min-height: 320px;
+}
+
+.view-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.3));
 }
 
 .hud-grid {
@@ -240,6 +288,12 @@ h1 {
   margin: 0;
   font-size: 1.02rem;
   line-height: 1.4;
+  word-break: break-word;
+}
+
+.debug-grid dd {
+  font-family: "Courier New", monospace;
+  font-size: 0.92rem;
 }
 
 .log-list {
@@ -300,13 +354,21 @@ h1 {
     grid-template-columns: 1fr;
   }
 
-  .camera-panel,
+  .views-panel,
   .narration-panel {
     grid-column: auto;
     grid-row: auto;
   }
 
+  .views-grid {
+    grid-template-columns: 1fr;
+  }
+
   .camera-frame {
     min-height: 320px;
+  }
+
+  .spectator-frame {
+    min-height: 260px;
   }
 }

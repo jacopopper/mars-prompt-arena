@@ -47,6 +47,7 @@ class GeminiBrain(Brain):
             "provider": "gemini",
             "model": self.model,
             "request": {
+                "system_prompt": GeminiConfig.SYSTEM_PROMPT,
                 "prompt": prompt,
                 "mission_context": mission_ctx,
                 "state_summary": self._state_summary(state),
@@ -62,12 +63,15 @@ class GeminiBrain(Brain):
 
         try:
             response = self._request_with_retries(payload, trace)
+            trace["response_preview"] = self._summarize_candidates(response)
             actions, parsed_calls = self._parse_actions(response)
+            actions, postprocess_repairs = self._complete_explicit_sequence(prompt, state, actions)
             trace["parsed_calls"] = parsed_calls
             trace["parsed_actions"] = [
                 {"name": action.skill, "params": dict(action.params)}
                 for action in actions
             ]
+            trace["postprocess_repairs"] = postprocess_repairs
             if actions:
                 trace["final_provider"] = "gemini"
                 trace["fallback_used"] = False
@@ -98,6 +102,7 @@ class GeminiBrain(Brain):
             "provider": "gemini",
             "model": self.model,
             "request": {
+                "system_prompt": GeminiConfig.SYSTEM_PROMPT,
                 "result_messages": [
                     {
                         "success": result.success,
@@ -117,6 +122,7 @@ class GeminiBrain(Brain):
 
         try:
             response = self._request_with_retries(payload, trace)
+            trace["response_preview"] = self._summarize_candidates(response)
             raw_narration = self._extract_text(response)
             trace["raw_text"] = raw_narration
             if raw_narration:
@@ -164,7 +170,9 @@ class GeminiBrain(Brain):
                 "text": (
                     "Plan the next safe robot actions.\n"
                     "Return only function calls from the available tools.\n"
-                    "Use at most three actions.\n\n"
+                    "Use at most three actions.\n"
+                    "If the user clearly asked for multiple compatible steps, complete the short sequence in one turn instead of stopping after the first safe action.\n"
+                    "When the user asks to scan and then report what was detected, include both `scan()` and `report()` if they fit within the action limit.\n\n"
                     f"User prompt:\n{prompt}\n\n"
                     f"Mission context:\n{mission_ctx}\n\n"
                     f"Robot state:\n{self._state_summary(state)}"
@@ -399,6 +407,52 @@ class GeminiBrain(Brain):
 
         return Action(skill=skill, params=repaired), repairs
 
+    def _complete_explicit_sequence(
+        self,
+        prompt: str,
+        state: RobotState,
+        actions: list[Action],
+    ) -> tuple[list[Action], list[dict[str, Any]]]:
+        """Append obvious missing follow-up actions that the user explicitly requested."""
+
+        completed = list(actions[:3])
+        repairs: list[dict[str, Any]] = []
+        text = prompt.lower()
+
+        def has_action(skill: str) -> bool:
+            return any(action.skill == skill for action in completed)
+
+        def add_action(skill: str, params: dict[str, Any], reason: str) -> None:
+            if len(completed) >= 3 or has_action(skill):
+                return
+            completed.append(Action(skill=skill, params=params))
+            repairs.append(
+                {
+                    "source": "postprocess",
+                    "reason": reason,
+                    "action": {"name": skill, "params": dict(params)},
+                }
+            )
+
+        if self._wants_stand(text) and not state.is_standing and not has_action("stand"):
+            completed.insert(0, Action(skill="stand", params={}))
+            repairs.append(
+                {
+                    "source": "postprocess",
+                    "reason": "Inserted requested stand action before follow-up tools.",
+                    "action": {"name": "stand", "params": {}},
+                }
+            )
+            completed = completed[:3]
+
+        if self._wants_scan(text):
+            add_action("scan", {}, "Added requested scan action omitted by Gemini.")
+
+        if self._wants_report(text):
+            add_action("report", {}, "Added requested report action omitted by Gemini.")
+
+        return completed[:3], repairs
+
     def _fallback_plan(
         self,
         message: str,
@@ -469,6 +523,41 @@ class GeminiBrain(Brain):
         return value if isinstance(value, (int, float)) else None
 
     @staticmethod
+    def _wants_stand(text: str) -> bool:
+        """Return whether the prompt explicitly asks the robot to stand."""
+
+        return "stand" in text or "stand up" in text
+
+    @staticmethod
+    def _wants_scan(text: str) -> bool:
+        """Return whether the prompt explicitly asks for a scan-like perception action."""
+
+        scan_markers = (
+            "scan",
+            "look",
+            "inspect",
+            "search",
+            "horizon",
+            "detect",
+        )
+        return any(marker in text for marker in scan_markers)
+
+    @staticmethod
+    def _wants_report(text: str) -> bool:
+        """Return whether the prompt explicitly asks for a report or summary."""
+
+        report_markers = (
+            "report",
+            "status",
+            "what you detect",
+            "what you found",
+            "what you see",
+            "tell me",
+            "summarize",
+        )
+        return any(marker in text for marker in report_markers)
+
+    @staticmethod
     def _normalize_narration(text: str) -> str:
         """Enforce a first-person narration prefix when the model omits one."""
 
@@ -499,6 +588,51 @@ class GeminiBrain(Brain):
         """Return a JSON-safe Gemini response preview."""
 
         return deepcopy(response)
+
+    @staticmethod
+    def _summarize_candidates(response: dict[str, Any]) -> list[dict[str, Any]]:
+        """Build a compact preview of Gemini output parts for debugging."""
+
+        preview: list[dict[str, Any]] = []
+        for index, candidate in enumerate(response.get("candidates", []), start=1):
+            parts_preview: list[dict[str, Any]] = []
+            content = candidate.get("content", {})
+            for part in content.get("parts", []):
+                function_call = part.get("functionCall")
+                if function_call:
+                    parts_preview.append(
+                        {
+                            "type": "functionCall",
+                            "name": function_call.get("name", ""),
+                            "args": function_call.get("args", {}),
+                        }
+                    )
+                    continue
+                text = part.get("text")
+                if text:
+                    parts_preview.append(
+                        {
+                            "type": "text",
+                            "text": GeminiBrain._preview_text(text),
+                        }
+                    )
+            preview.append(
+                {
+                    "candidate_index": index,
+                    "finish_reason": candidate.get("finishReason"),
+                    "parts": parts_preview,
+                }
+            )
+        return preview
+
+    @staticmethod
+    def _preview_text(text: str, max_chars: int = 240) -> str:
+        """Trim long text responses so debug previews stay readable."""
+
+        compact = " ".join(text.strip().split())
+        if len(compact) <= max_chars:
+            return compact
+        return compact[: max_chars - 1] + "..."
 
     @staticmethod
     def _state_summary(state: RobotState) -> str:

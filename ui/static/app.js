@@ -2,7 +2,10 @@
 
 const state = {
   connected: false,
-  frameData: "",
+  frames: {
+    robot_pov: "",
+    spectator_3d: "",
+  },
   missionState: {
     mission_id: null,
     mission_label: null,
@@ -29,6 +32,17 @@ const state = {
     last_fallback_reason: null,
     last_plan_retry_count: 0,
     last_narration_retry_count: 0,
+    available_views: [],
+    latest_turn_id: null,
+    latest_turn_log_path: null,
+    last_raw_plan_calls: [],
+    last_accepted_plan_actions: [],
+    last_plan_finish_reasons: [],
+    last_narration_finish_reasons: [],
+    last_plan_usage_metadata: {},
+    last_narration_usage_metadata: {},
+    last_plan_response_preview: [],
+    last_narration_response_preview: [],
   },
 };
 
@@ -40,7 +54,10 @@ const elements = {
   simModePill: document.querySelector("#sim-mode-pill"),
   brainModePill: document.querySelector("#brain-mode-pill"),
   phasePill: document.querySelector("#phase-pill"),
-  cameraImage: document.querySelector("#camera-image"),
+  robotCameraImage: document.querySelector("#robot-camera-image"),
+  spectatorCameraImage: document.querySelector("#spectator-camera-image"),
+  robotCameraPlaceholder: document.querySelector("#robot-camera-placeholder"),
+  spectatorCameraPlaceholder: document.querySelector("#spectator-camera-placeholder"),
   missionTitle: document.querySelector("#mission-title"),
   statusValue: document.querySelector("#status-value"),
   objectiveValue: document.querySelector("#objective-value"),
@@ -52,6 +69,17 @@ const elements = {
   fallbackValue: document.querySelector("#fallback-value"),
   retriesValue: document.querySelector("#retries-value"),
   summaryValue: document.querySelector("#summary-value"),
+  turnIdValue: document.querySelector("#turn-id-value"),
+  logPathValue: document.querySelector("#log-path-value"),
+  availableViewsValue: document.querySelector("#available-views-value"),
+  rawCallsValue: document.querySelector("#raw-calls-value"),
+  acceptedActionsValue: document.querySelector("#accepted-actions-value"),
+  planFinishValue: document.querySelector("#plan-finish-value"),
+  narrationFinishValue: document.querySelector("#narration-finish-value"),
+  planUsageValue: document.querySelector("#plan-usage-value"),
+  narrationUsageValue: document.querySelector("#narration-usage-value"),
+  planPreviewValue: document.querySelector("#plan-preview-value"),
+  narrationPreviewValue: document.querySelector("#narration-preview-value"),
   toolTraceList: document.querySelector("#tool-trace-list"),
   narrationList: document.querySelector("#narration-list"),
   historyList: document.querySelector("#history-list"),
@@ -90,9 +118,15 @@ function connect() {
 
 function handleEvent(payload) {
   if (payload.type === "frame") {
-    state.frameData = payload.data;
+    const viewName = payload.view || "robot_pov";
+    state.frames[viewName] = payload.data;
   } else if (payload.type === "mission_state") {
     state.missionState = payload;
+    Object.keys(state.frames).forEach((viewName) => {
+      if (!payload.available_views?.includes(viewName)) {
+        state.frames[viewName] = "";
+      }
+    });
   } else if (payload.type === "tool_trace") {
     state.missionState.tool_trace = payload.calls;
   } else if (payload.type === "narration") {
@@ -170,10 +204,30 @@ function render() {
   elements.fallbackValue.textContent = missionState.last_fallback_reason || "--";
   elements.retriesValue.textContent = `${missionState.last_plan_retry_count || 0} / ${missionState.last_narration_retry_count || 0}`;
   elements.summaryValue.textContent = missionState.summary || "Waiting for mission start.";
+  elements.turnIdValue.textContent = missionState.latest_turn_id ?? "--";
+  elements.logPathValue.textContent = missionState.latest_turn_log_path || "--";
+  elements.availableViewsValue.textContent = formatList(missionState.available_views || []);
+  elements.rawCallsValue.textContent = formatRawCalls(missionState.last_raw_plan_calls || []);
+  elements.acceptedActionsValue.textContent = formatActions(missionState.last_accepted_plan_actions || []);
+  elements.planFinishValue.textContent = formatList(missionState.last_plan_finish_reasons || []);
+  elements.narrationFinishValue.textContent = formatList(missionState.last_narration_finish_reasons || []);
+  elements.planUsageValue.textContent = formatUsage(missionState.last_plan_usage_metadata || {});
+  elements.narrationUsageValue.textContent = formatUsage(missionState.last_narration_usage_metadata || {});
+  elements.planPreviewValue.textContent = formatPreview(missionState.last_plan_response_preview || []);
+  elements.narrationPreviewValue.textContent = formatPreview(missionState.last_narration_response_preview || []);
 
-  if (state.frameData) {
-    elements.cameraImage.src = `data:image/jpeg;base64,${state.frameData}`;
-  }
+  renderView(
+    elements.robotCameraImage,
+    elements.robotCameraPlaceholder,
+    state.frames.robot_pov,
+    "Awaiting robot POV.",
+  );
+  renderView(
+    elements.spectatorCameraImage,
+    elements.spectatorCameraPlaceholder,
+    state.frames.spectator_3d,
+    "Spectator view unavailable in the active backend.",
+  );
 
   renderLogList(elements.toolTraceList, missionState.tool_trace || [], (entry) => {
     const item = document.createElement("li");
@@ -216,6 +270,80 @@ function render() {
   const canPrompt = state.connected && !missionState.prompt_in_flight && Boolean(missionState.mission_id);
   elements.promptInput.disabled = !canPrompt;
   elements.sendButton.disabled = !canPrompt;
+}
+
+function renderView(imageNode, placeholderNode, frameData, emptyMessage) {
+  if (frameData) {
+    imageNode.src = `data:image/jpeg;base64,${frameData}`;
+    imageNode.classList.remove("hidden");
+    placeholderNode.classList.add("hidden");
+    return;
+  }
+  imageNode.removeAttribute("src");
+  imageNode.classList.add("hidden");
+  placeholderNode.textContent = emptyMessage;
+  placeholderNode.classList.remove("hidden");
+}
+
+function formatList(values) {
+  return values.length ? values.join(", ") : "--";
+}
+
+function formatActions(actions) {
+  if (!actions.length) {
+    return "--";
+  }
+  return actions.map((action) => `${action.name}${formatParams(action.params)}`).join(", ");
+}
+
+function formatRawCalls(calls) {
+  if (!calls.length) {
+    return "--";
+  }
+  return calls
+    .map((call) => {
+      const status = call.accepted ? "accepted" : "rejected";
+      const reason = call.validation_error ? ` (${call.validation_error})` : "";
+      return `${call.name}${formatParams(call.args)} [${status}]${reason}`;
+    })
+    .join("; ");
+}
+
+function formatParams(params) {
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return params === undefined ? "()" : `(value=${JSON.stringify(params)})`;
+  }
+  const entries = Object.entries(params);
+  if (!entries.length) {
+    return "()";
+  }
+  const content = entries.map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(", ");
+  return `(${content})`;
+}
+
+function formatUsage(usage) {
+  const entries = Object.entries(usage || {});
+  if (!entries.length) {
+    return "--";
+  }
+  return entries.map(([key, value]) => `${key}=${value}`).join(", ");
+}
+
+function formatPreview(preview) {
+  if (!preview.length) {
+    return "--";
+  }
+  return preview
+    .map((candidate) => {
+      const parts = (candidate.parts || []).map((part) => {
+        if (part.type === "functionCall") {
+          return `${part.name}${formatParams(part.args || {})}`;
+        }
+        return part.text || part.type;
+      });
+      return `candidate ${candidate.candidate_index}: ${parts.join(" | ")}`;
+    })
+    .join(" || ");
 }
 
 elements.promptForm.addEventListener("submit", (event) => {

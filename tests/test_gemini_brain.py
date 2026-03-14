@@ -54,6 +54,9 @@ class GeminiBrainTests(unittest.TestCase):
             actions = brain.plan("Stand and turn right.", self.state, "ctx")
         self.assertEqual([action.skill for action in actions], ["stand", "turn"])
         self.assertEqual(actions[1].params["angle_deg"], 45.0)
+        trace = brain.consume_plan_trace()
+        self.assertEqual(trace["parsed_calls"][0]["raw_name"], "stand")
+        self.assertEqual(trace["response_preview"][0]["parts"][0]["type"], "functionCall")
 
     def test_plan_falls_back_when_no_valid_calls_exist(self) -> None:
         """Empty or malformed responses should fall back to the mock brain."""
@@ -68,6 +71,72 @@ class GeminiBrainTests(unittest.TestCase):
         self.assertTrue(trace["fallback_used"])
         self.assertEqual(trace["final_provider"], "mock")
 
+    def test_plan_completes_explicit_scan_and_report_sequence(self) -> None:
+        """Explicitly requested follow-up actions should be completed locally."""
+
+        brain = GeminiBrain(api_key="test-key", allow_fallback=False)
+        with patch.object(
+            brain,
+            "_request_with_retries",
+            return_value={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"functionCall": {"name": "stand", "args": {}}},
+                            ]
+                        }
+                    }
+                ]
+            },
+        ):
+            actions = brain.plan(
+                "Stand up, scan the horizon, and report what you detect.",
+                self.state,
+                "ctx",
+            )
+        self.assertEqual([action.skill for action in actions], ["stand", "scan", "report"])
+        trace = brain.consume_plan_trace()
+        self.assertEqual([call["raw_name"] for call in trace["parsed_calls"]], ["stand"])
+        self.assertEqual(
+            [action["name"] for action in trace["parsed_actions"]],
+            ["stand", "scan", "report"],
+        )
+        self.assertEqual(len(trace["postprocess_repairs"]), 2)
+
+    def test_plan_completes_report_after_scan(self) -> None:
+        """If Gemini scans but omits the requested report, append the report action."""
+
+        standing_state = RobotState(
+            position=(0.0, 0.0, 0.35),
+            orientation=0.0,
+            camera_frame=b"jpeg",
+            battery=1.0,
+            is_standing=True,
+            contacts=["ground"],
+        )
+        brain = GeminiBrain(api_key="test-key", allow_fallback=False)
+        with patch.object(
+            brain,
+            "_request_with_retries",
+            return_value={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"functionCall": {"name": "scan", "args": {}}},
+                            ]
+                        }
+                    }
+                ]
+            },
+        ):
+            actions = brain.plan("Scan the horizon and report what you detect.", standing_state, "ctx")
+        self.assertEqual([action.skill for action in actions], ["scan", "report"])
+        trace = brain.consume_plan_trace()
+        self.assertEqual(len(trace["postprocess_repairs"]), 1)
+        self.assertEqual(trace["postprocess_repairs"][0]["action"]["name"], "report")
+
     def test_narration_extracts_text(self) -> None:
         """Narration responses should read back the model text."""
 
@@ -79,6 +148,8 @@ class GeminiBrainTests(unittest.TestCase):
         ):
             narration = brain.narrate([ActionResult(True, "moved", self.state)], self.state)
         self.assertEqual(narration, "I reached the shelter.")
+        trace = brain.consume_narration_trace()
+        self.assertEqual(trace["response_preview"][0]["parts"][0]["type"], "text")
 
     def test_narration_is_normalized_to_first_person(self) -> None:
         """Third-person or detached narration should be normalized locally."""

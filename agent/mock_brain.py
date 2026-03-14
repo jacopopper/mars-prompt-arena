@@ -60,15 +60,42 @@ class MockBrain(Brain):
             actions.append(Action("report", {}))
 
         planned_actions = actions[:3]
+        parsed_actions = [
+            {"name": action.skill, "params": dict(action.params)}
+            for action in planned_actions
+        ]
+        parsed_calls = [
+            {
+                "raw_name": action.skill,
+                "raw_args": dict(action.params),
+                "repairs": [],
+                "accepted": True,
+                "validation_error": None,
+                "action": {"name": action.skill, "params": dict(action.params)},
+            }
+            for action in planned_actions
+        ]
         self._last_plan_trace = {
             "provider": "mock",
             "final_provider": "mock",
             "fallback_used": False,
             "fallback_reason": None,
             "retry_count_used": 0,
-            "parsed_actions": [
-                {"name": action.skill, "params": dict(action.params)}
-                for action in planned_actions
+            "parsed_calls": parsed_calls,
+            "parsed_actions": parsed_actions,
+            "response_preview": [
+                {
+                    "candidate_index": 1,
+                    "finish_reason": "STOP",
+                    "parts": [
+                        {
+                            "type": "functionCall",
+                            "name": action.skill,
+                            "args": dict(action.params),
+                        }
+                        for action in planned_actions
+                    ],
+                }
             ],
         }
         return planned_actions
@@ -101,6 +128,13 @@ class MockBrain(Brain):
             "raw_text": narration,
             "normalized_text": narration,
             "style_normalized": False,
+            "response_preview": [
+                {
+                    "candidate_index": 1,
+                    "finish_reason": "STOP",
+                    "parts": [{"type": "text", "text": narration}],
+                }
+            ],
         }
         return narration
 

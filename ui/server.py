@@ -29,6 +29,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 SUPPORTED_SIM_MODES = {"fake", "mujoco"}
 SUPPORTED_BRAIN_MODES = {"mock", "gemini"}
 IDLE_PREVIEW_MISSION_ID = "wake_up"
+PRIMARY_VIEW = "robot_pov"
+SECONDARY_VIEW = "spectator_3d"
+VIEW_ORDER = (PRIMARY_VIEW, SECONDARY_VIEW)
 
 
 @dataclass
@@ -59,6 +62,15 @@ class SessionState:
     last_fallback_reason: str | None = None
     last_plan_retry_count: int = 0
     last_narration_retry_count: int = 0
+    available_views: list[str] = field(default_factory=list)
+    last_raw_plan_calls: list[dict[str, Any]] = field(default_factory=list)
+    last_accepted_plan_actions: list[dict[str, Any]] = field(default_factory=list)
+    last_plan_finish_reasons: list[str] = field(default_factory=list)
+    last_narration_finish_reasons: list[str] = field(default_factory=list)
+    last_plan_usage_metadata: dict[str, Any] = field(default_factory=dict)
+    last_narration_usage_metadata: dict[str, Any] = field(default_factory=dict)
+    last_plan_response_preview: list[dict[str, Any]] = field(default_factory=list)
+    last_narration_response_preview: list[dict[str, Any]] = field(default_factory=list)
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -75,6 +87,7 @@ def create_app(sim_mode: str | None = None, brain_mode: str | None = None) -> Fa
     session_id = uuid4().hex[:12]
     env = _build_environment(resolved_sim_mode)
     bootstrap_state = env.reset(IDLE_PREVIEW_MISSION_ID)
+    bootstrap_views = _collect_frame_views(env, bootstrap_state)
     brain, effective_brain_mode, startup_error = _build_brain(resolved_brain_mode)
     turn_logger = TurnLogger(session_id=session_id)
     session = SessionState(
@@ -87,6 +100,7 @@ def create_app(sim_mode: str | None = None, brain_mode: str | None = None) -> Fa
         robot_state=bootstrap_state,
         turn_logger=turn_logger,
         latest_turn_log_path=turn_logger.latest_path(),
+        available_views=list(bootstrap_views),
         last_error=startup_error,
     )
 
@@ -185,15 +199,10 @@ async def _start_mission(websocket: WebSocket, session: SessionState, mission_id
     session.phase = "idle"
     session.prompt_in_flight = False
     session.last_error = None
-    session.latest_turn_id = None
-    session.last_planning_provider = None
-    session.last_narration_provider = None
-    session.last_fallback_reason = None
-    session.last_plan_retry_count = 0
-    session.last_narration_retry_count = 0
+    _reset_runtime_debug(session)
     mission.start()
     session.robot_state = session.env.reset(mission_id)
-    await _emit_views(websocket, session)
+    await _emit_views(websocket, session, session.robot_state)
     await _emit_state(websocket, session)
 
 
@@ -207,13 +216,9 @@ async def _reset_session(websocket: WebSocket, session: SessionState) -> None:
         session.phase = "idle"
         session.prompt_in_flight = False
         session.last_error = None
-        session.latest_turn_id = None
-        session.last_planning_provider = None
-        session.last_narration_provider = None
-        session.last_fallback_reason = None
-        session.last_plan_retry_count = 0
-        session.last_narration_retry_count = 0
+        _reset_runtime_debug(session)
         session.robot_state = session.env.reset(IDLE_PREVIEW_MISSION_ID)
+        session.available_views = list(_collect_frame_views(session.env, session.robot_state))
         await _emit_snapshot(websocket, session)
         return
 
@@ -339,7 +344,7 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
                 message=result.message,
                 resulting_state=_state_summary(result.new_state),
             )
-            await _emit_views(websocket, session)
+            await _emit_views(websocket, session, latest_state)
 
         session.phase = "reporting"
         await _emit_state(websocket, session)
@@ -370,9 +375,8 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
             session.turn_logger.log("gemini_narration_response", context, trace=narration_trace)
         if narration_trace.get("fallback_used"):
             session.turn_logger.log(
-                "plan_fallback",
+                "narration_fallback",
                 context,
-                stage="narration",
                 reason=narration_trace.get("fallback_reason"),
                 final_provider=narration_trace.get("final_provider"),
                 trace=narration_trace,
@@ -427,33 +431,29 @@ async def _run_turn(websocket: WebSocket, session: SessionState, prompt: str) ->
 async def _emit_snapshot(websocket: WebSocket, session: SessionState) -> None:
     """Send a full state snapshot to a newly connected client."""
 
-    await _emit_views(websocket, session)
+    await _emit_views(websocket, session, session.robot_state)
     await _emit_state(websocket, session)
 
 
-async def _emit_frame(websocket: WebSocket, frame_bytes: bytes, view: str = "robot_pov") -> None:
-    """Emit a base64-encoded frame event for a named view."""
+async def _emit_views(websocket: WebSocket, session: SessionState, state: RobotState) -> None:
+    """Emit every available frame view for the current state."""
+
+    frame_views = _collect_frame_views(session.env, state)
+    session.available_views = list(frame_views)
+    for view_name, frame_bytes in frame_views.items():
+        await _emit_frame(websocket, view_name, frame_bytes)
+
+
+async def _emit_frame(websocket: WebSocket, view_name: str, frame_bytes: bytes) -> None:
+    """Emit one base64-encoded frame event for a named view."""
 
     await websocket.send_json(
         {
             "type": "frame",
-            "view": view,
+            "view": view_name,
             "data": base64.b64encode(frame_bytes).decode("ascii"),
         }
     )
-
-
-async def _emit_views(websocket: WebSocket, session: SessionState) -> None:
-    """Emit robot_pov and spectator_3d frames from the active environment."""
-
-    render_views_fn = getattr(session.env, "render_views", None)
-    if render_views_fn is not None:
-        views = render_views_fn()
-        for view_name, frame_bytes in views.items():
-            if frame_bytes:
-                await _emit_frame(websocket, frame_bytes, view=view_name)
-    else:
-        await _emit_frame(websocket, session.robot_state.camera_frame, view="robot_pov")
 
 
 async def _emit_narration(websocket: WebSocket, text: str) -> None:
@@ -532,6 +532,15 @@ def _serialize_state(session: SessionState) -> dict[str, Any]:
         "last_fallback_reason": session.last_fallback_reason,
         "last_plan_retry_count": session.last_plan_retry_count,
         "last_narration_retry_count": session.last_narration_retry_count,
+        "available_views": list(session.available_views),
+        "last_raw_plan_calls": list(session.last_raw_plan_calls),
+        "last_accepted_plan_actions": list(session.last_accepted_plan_actions),
+        "last_plan_finish_reasons": list(session.last_plan_finish_reasons),
+        "last_narration_finish_reasons": list(session.last_narration_finish_reasons),
+        "last_plan_usage_metadata": dict(session.last_plan_usage_metadata),
+        "last_narration_usage_metadata": dict(session.last_narration_usage_metadata),
+        "last_plan_response_preview": list(session.last_plan_response_preview),
+        "last_narration_response_preview": list(session.last_narration_response_preview),
     }
 
 
@@ -593,6 +602,30 @@ def _update_plan_provenance(session: SessionState, trace: dict[str, Any]) -> Non
     session.last_planning_provider = trace.get("final_provider") or trace.get("provider")
     session.last_fallback_reason = trace.get("fallback_reason")
     session.last_plan_retry_count = int(trace.get("retry_count_used", 0) or 0)
+    response_metadata = trace.get("response_metadata", {})
+    parsed_calls = trace.get("parsed_calls", [])
+    session.last_raw_plan_calls = [
+        {
+            "name": call.get("raw_name", ""),
+            "args": _normalize_debug_args(call.get("raw_args", {})),
+            "accepted": bool(call.get("accepted")),
+            "validation_error": call.get("validation_error"),
+            "repairs": list(call.get("repairs", [])),
+        }
+        for call in parsed_calls
+    ]
+    session.last_accepted_plan_actions = list(
+        trace.get("parsed_actions")
+        or trace.get("fallback_actions")
+        or []
+    )
+    session.last_plan_finish_reasons = [
+        str(reason)
+        for reason in response_metadata.get("finish_reasons", [])
+        if reason is not None
+    ]
+    session.last_plan_usage_metadata = dict(response_metadata.get("usage_metadata", {}))
+    session.last_plan_response_preview = list(trace.get("response_preview", []))
 
 
 def _update_narration_provenance(session: SessionState, trace: dict[str, Any]) -> None:
@@ -602,6 +635,68 @@ def _update_narration_provenance(session: SessionState, trace: dict[str, Any]) -
     if trace.get("fallback_reason"):
         session.last_fallback_reason = trace.get("fallback_reason")
     session.last_narration_retry_count = int(trace.get("retry_count_used", 0) or 0)
+    response_metadata = trace.get("response_metadata", {})
+    session.last_narration_finish_reasons = [
+        str(reason)
+        for reason in response_metadata.get("finish_reasons", [])
+        if reason is not None
+    ]
+    session.last_narration_usage_metadata = dict(response_metadata.get("usage_metadata", {}))
+    session.last_narration_response_preview = list(trace.get("response_preview", []))
+
+
+def _reset_runtime_debug(session: SessionState) -> None:
+    """Clear UI-facing provenance and debug metadata for a fresh mission state."""
+
+    session.latest_turn_id = None
+    session.last_planning_provider = None
+    session.last_narration_provider = None
+    session.last_fallback_reason = None
+    session.last_plan_retry_count = 0
+    session.last_narration_retry_count = 0
+    session.last_raw_plan_calls = []
+    session.last_accepted_plan_actions = []
+    session.last_plan_finish_reasons = []
+    session.last_narration_finish_reasons = []
+    session.last_plan_usage_metadata = {}
+    session.last_narration_usage_metadata = {}
+    session.last_plan_response_preview = []
+    session.last_narration_response_preview = []
+
+
+def _collect_frame_views(env: Any, state: RobotState) -> dict[str, bytes]:
+    """Collect every available frame view, falling back to the robot POV only."""
+
+    frame_views: dict[str, bytes] = {}
+    render_views = getattr(env, "render_views", None)
+    if callable(render_views):
+        rendered = render_views()
+        if isinstance(rendered, dict):
+            for view_name, frame_bytes in rendered.items():
+                if isinstance(frame_bytes, (bytes, bytearray)) and frame_bytes:
+                    frame_views[str(view_name)] = bytes(frame_bytes)
+
+    if state.camera_frame:
+        frame_views.setdefault(PRIMARY_VIEW, state.camera_frame)
+
+    ordered_views: dict[str, bytes] = {}
+    for view_name in VIEW_ORDER:
+        if view_name in frame_views:
+            ordered_views[view_name] = frame_views[view_name]
+    for view_name in sorted(frame_views):
+        if view_name not in ordered_views:
+            ordered_views[view_name] = frame_views[view_name]
+    return ordered_views
+
+
+def _normalize_debug_args(raw_args: Any) -> dict[str, Any]:
+    """Normalize raw Gemini args so malformed calls still serialize in the UI."""
+
+    if isinstance(raw_args, dict):
+        return dict(raw_args)
+    if raw_args in (None, ""):
+        return {}
+    return {"value": raw_args}
 
 
 app = create_app()

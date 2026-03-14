@@ -48,13 +48,35 @@
           <div id="summary-card" class="summary-card hidden"></div>
         </section>
 
-        <section class="panel camera-panel">
+        <section class="panel views-panel">
           <div class="panel-header">
-            <h2>Robot Camera</h2>
-            <p>Live frame stream from the active backend.</p>
+            <h2>Live Views</h2>
+            <p>Robot perception and operator-side spatial context.</p>
           </div>
-          <div class="camera-frame">
-            <img id="camera-image" alt="Robot camera feed">
+          <div class="views-grid">
+            <article class="view-card">
+              <div class="view-card-header">
+                <h3>Robot POV</h3>
+                <p>The only camera frame sent into Gemini planning.</p>
+              </div>
+              <div class="camera-frame">
+                <img id="robot-camera-image" alt="Robot point-of-view camera feed">
+                <div id="robot-camera-placeholder" class="view-placeholder">Awaiting robot POV.</div>
+              </div>
+            </article>
+
+            <article class="view-card">
+              <div class="view-card-header">
+                <h3>3D Spectator</h3>
+                <p>Secondary operator view. Populates when Builder A exposes it.</p>
+              </div>
+              <div class="camera-frame spectator-frame">
+                <img id="spectator-camera-image" alt="Spectator 3D view">
+                <div id="spectator-camera-placeholder" class="view-placeholder">
+                  Spectator view unavailable in the active backend.
+                </div>
+              </div>
+            </article>
           </div>
         </section>
 
@@ -135,6 +157,59 @@
           <ul id="history-list" class="log-list empty-state">
             <li>No prompts submitted yet.</li>
           </ul>
+        </section>
+
+        <section class="panel debug-panel">
+          <div class="panel-header">
+            <h2>Gemini Debug</h2>
+            <p>Latest provider traces, raw calls, and inspection handles for builders.</p>
+          </div>
+          <dl class="hud-grid debug-grid">
+            <div>
+              <dt>Turn ID</dt>
+              <dd id="turn-id-value">--</dd>
+            </div>
+            <div>
+              <dt>Log Path</dt>
+              <dd id="log-path-value">--</dd>
+            </div>
+            <div>
+              <dt>Views</dt>
+              <dd id="available-views-value">--</dd>
+            </div>
+            <div>
+              <dt>Raw Calls</dt>
+              <dd id="raw-calls-value">--</dd>
+            </div>
+            <div>
+              <dt>Accepted Actions</dt>
+              <dd id="accepted-actions-value">--</dd>
+            </div>
+            <div>
+              <dt>Plan Finish</dt>
+              <dd id="plan-finish-value">--</dd>
+            </div>
+            <div>
+              <dt>Narration Finish</dt>
+              <dd id="narration-finish-value">--</dd>
+            </div>
+            <div>
+              <dt>Plan Usage</dt>
+              <dd id="plan-usage-value">--</dd>
+            </div>
+            <div>
+              <dt>Narration Usage</dt>
+              <dd id="narration-usage-value">--</dd>
+            </div>
+            <div>
+              <dt>Plan Preview</dt>
+              <dd id="plan-preview-value">--</dd>
+            </div>
+            <div>
+              <dt>Narration Preview</dt>
+              <dd id="narration-preview-value">--</dd>
+            </div>
+          </dl>
         </section>
       </main>
     </div>

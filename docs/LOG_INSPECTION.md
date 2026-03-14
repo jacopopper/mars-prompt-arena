@@ -15,6 +15,7 @@ Each prompt turn records machine-readable events such as:
 - `gemini_plan_response`
 - `plan_parsed`
 - `plan_fallback`
+- `narration_fallback`
 - `tool_dispatch_started`
 - `tool_dispatch_result`
 - `gemini_narration_request`
@@ -45,6 +46,12 @@ Latest turn:
 
 ```bash
 conda run -n mldl python scripts/inspect_turn_logs.py --latest
+```
+
+Latest turn with raw Gemini previews and retry metadata:
+
+```bash
+conda run -n mldl python scripts/inspect_turn_logs.py --latest --verbose
 ```
 
 Latest failed turn:
@@ -79,7 +86,9 @@ conda run -n mldl python scripts/inspect_turn_logs.py --provider mock
 3. Inspect the selected turn.
 4. Check:
    - prompt and mission context
+   - raw Gemini function calls
    - parsed actions
+   - response preview
    - fallback reason
    - tool results
    - narration
@@ -87,5 +96,6 @@ conda run -n mldl python scripts/inspect_turn_logs.py --provider mock
 
 ## Notes
 
+- The operator UI now exposes a compact builder-only Gemini debug panel for the latest turn.
 - The frontend `mission_state` payload exposes the latest provider and fallback fields for quick inspection.
 - The CLI is the source of truth for the full structured trace.
