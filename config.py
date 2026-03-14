@@ -13,7 +13,7 @@ load_dotenv()
 @dataclass
 class RobotState:
     position: tuple[float, float, float]    # x, y, z in world frame (meters)
-    orientation: float                       # yaw angle in degrees (0 = north)
+    orientation: float                       # yaw angle in degrees (0 = east, CCW positive)
     camera_frame: bytes                      # JPEG image from robot front camera
     battery: float                           # 0.0 (empty) → 1.0 (full), mock
     is_standing: bool
@@ -46,7 +46,7 @@ class MissionStatus(Enum):
 
 @dataclass
 class MissionState:
-    mission_id: int
+    mission_id: str             # "wake_up" | "storm" | "signal"
     status: MissionStatus
     prompts_used: int
     prompts_budget: int
@@ -67,9 +67,9 @@ class SimConfig:
     CAMERA_FPS      = 10        # Frames streamed to UI per second
 
     SCENES = {
-        1: "sim/scenes/mission_1.xml",
-        2: "sim/scenes/mission_2.xml",
-        3: "sim/scenes/mission_3.xml",
+        "wake_up": "sim/scenes/go2/mission_1.xml",
+        "storm":   "sim/scenes/go2/mission_2.xml",
+        "signal":  "sim/scenes/go2/mission_3.xml",
     }
 
 
@@ -79,9 +79,9 @@ class SimConfig:
 
 class MissionConfig:
     PROMPT_BUDGET = {
-        1: 7,   # Wake Up  — generous, it's a tutorial
-        2: 6,   # Storm    — tighter, urgency is the point
-        3: 8,   # Signal   — more exploration needed
+        "wake_up": 7,   # generous, it's a tutorial
+        "storm":   6,   # tighter, urgency is the point
+        "signal":  8,   # more exploration needed
     }
 
     STORM_DURATION_SECONDS = 120    # time before storm hits in Mission 2
