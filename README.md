@@ -103,18 +103,6 @@ BRAIN_MODE=gemini SIM_MODE=mujoco MUJOCO_GL=egl python main.py
 
 Then open **[http://localhost:8000](http://localhost:8000)** and start commanding your robot.
 
-> [!TIP]
-> **No GPU?** Run with the lightweight 2D simulator instead:
-> ```bash
-> BRAIN_MODE=gemini SIM_MODE=fake python main.py
-> ```
-
-> [!TIP]
-> **No API key?** Use the offline mock brain for testing:
-> ```bash
-> BRAIN_MODE=mock SIM_MODE=fake python main.py
-> ```
-
 ---
 
 ## 🧠 How It Works
@@ -170,13 +158,11 @@ The robot has **no autonomy by default**. It only does what Gemini tells it to d
 
 ```
 mars-prompt-arena/
-├── sim/              # Simulation layer (MuJoCo + 2D fallback)
+├── sim/              # Simulation layer (MuJoCo physics)
 │   ├── mujoco_env.py # Full physics with Go2 MJCF model
-│   ├── fake_env.py   # Lightweight 2D Pillow-based simulator
 │   └── scenes/       # MJCF scene files per mission
 ├── agent/            # AI brain layer
 │   ├── brain.py      # Gemini API: planning + narration
-│   ├── mock_brain.py # Offline keyword-matching brain
 │   ├── tools.py      # Tool definitions (robot capabilities)
 │   └── dispatcher.py # Maps tool calls → sim actions
 ├── missions/         # Mission logic & win conditions
@@ -210,19 +196,6 @@ Every completed mission is scored and ranked. The leaderboard tracks:
 - **Mission completion** — did you actually win?
 
 Practice your prompt craft. Climb the rankings. Prove you're the best remote operator on the planet.
-
----
-
-## 🔧 Configuration
-
-| Env Variable       | Values              | Description                          |
-|--------------------|---------------------|--------------------------------------|
-| `BRAIN_MODE`       | `gemini` · `mock`   | AI backend (real Gemini or offline)  |
-| `SIM_MODE`         | `mujoco` · `fake`   | Simulation backend                   |
-| `MUJOCO_GL`        | `egl` · `glfw`      | MuJoCo rendering backend            |
-| `GEMINI_API_KEY`   | your key            | Required when `BRAIN_MODE=gemini`    |
-| `HOST`             | `127.0.0.1`         | Server bind address                  |
-| `PORT`             | `8000`              | Server port                          |
 
 ---
 
