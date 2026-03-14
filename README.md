@@ -199,6 +199,15 @@ Practice your prompt craft. Climb the rankings. Prove you're the best remote ope
 
 ---
 
+## 👥 Authors
+
+- **Jacopo Dardini** — University of Bologna
+- **Davide Benedetti Valentini** — University Roma Tre
+
+Both authors had zero prior experience working with robotics and simulation environments.
+
+---
+
 ## 📜 License
 
 MIT
