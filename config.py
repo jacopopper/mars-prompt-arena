@@ -63,8 +63,8 @@ class MissionState:
 class SimConfig:
     TIMESTEP        = 0.002     # MuJoCo simulation timestep (seconds)
     CONTROL_HZ      = 50        # Controller frequency (Hz)
-    CAMERA_WIDTH    = 640
-    CAMERA_HEIGHT   = 480
+    CAMERA_WIDTH    = 1280
+    CAMERA_HEIGHT   = 720
     CAMERA_FPS      = 10        # Frames streamed to UI per second
 
     SCENES = {

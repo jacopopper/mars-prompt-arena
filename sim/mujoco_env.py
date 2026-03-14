@@ -59,10 +59,13 @@ class MujocoEnvironment:
         self._model = mujoco.MjModel.from_xml_path(scene)
         self._data  = mujoco.MjData(self._model)
         self._inject_terrain()
+        _SS = 2  # supersampling factor for AA
+        self._out_w = SimConfig.CAMERA_WIDTH
+        self._out_h = SimConfig.CAMERA_HEIGHT
         self._renderer = mujoco.Renderer(
             self._model,
-            height=SimConfig.CAMERA_HEIGHT,
-            width=SimConfig.CAMERA_WIDTH,
+            height=self._out_h * _SS,
+            width=self._out_w * _SS,
         )
         self._mission_id = mission_id
         self._scanned = set()
@@ -321,18 +324,20 @@ class MujocoEnvironment:
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
         rx = float(self._data.qpos[0])
         ry = float(self._data.qpos[1])
-        cam.lookat[:] = [rx, ry, 0.5]
-        cam.distance = 14.0
-        cam.elevation = -40.0
+        cam.lookat[:] = [rx, ry, 0.3]
+        cam.distance = 6.0
+        cam.elevation = -25.0
         cam.azimuth = 200.0
         self._renderer.update_scene(self._data, camera=cam)
         frame = self._renderer.render()
-        img = Image.fromarray(frame)
+        img = Image.fromarray(frame).resize(
+            (self._out_w, self._out_h), Image.LANCZOS
+        )
         if self._visibility < 1.0:
             haze = Image.new("RGB", img.size, color=(196, 168, 142))
             img = Image.blend(img, haze, 1.0 - self._visibility)
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
+        img.save(buf, format="JPEG", quality=95)
         return buf.getvalue()
 
     def _describe(self) -> str:
