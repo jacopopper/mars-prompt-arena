@@ -21,7 +21,7 @@ A playable local prototype where:
 - Python 3.11+
 - FastAPI + WebSocket for backend
 - Static HTML/JS for frontend (no framework)
-- Gemini 2.0 Flash with function calling
+- Gemini 2.5 Flash with function calling
 - MuJoCo + Go2 from mujoco-menagerie
 - Shared contracts live in `config.py` (already written)
 
@@ -117,7 +117,7 @@ One file owns each step. No shared state outside of the session object in `serve
 
 ### Phase 2 — Real Gemini (Builder B, Day 1 evening)
 
-- `agent/brain.py`: replace mock with real Gemini 2.0 Flash
+- `agent/brain.py`: replace mock with real Gemini 2.5 Flash
   - `plan()`: send prompt + frame + state + tools → parse tool calls
   - `narrate()`: send results → get first-person narration
 - Keep `mock_brain.py` alive — switch via env var `BRAIN_MODE=mock|gemini`

@@ -5,7 +5,7 @@
 | Layer | Technology |
 |---|---|
 | Simulation | MuJoCo + Go2 MJCF (mujoco-menagerie) |
-| AI Brain | Gemini 2.0 Flash (multimodal + function calling) |
+| AI Brain | Gemini 2.5 Flash (multimodal + function calling) |
 | Backend | FastAPI + WebSocket |
 | Frontend | HTML/JS (camera feed + chat + mission HUD) |
 | Language | Python 3.11+ |
@@ -17,9 +17,10 @@
 ```
 mars-prompt-arena/
 │
-├── sim/                        # MuJoCo simulation layer
-│   ├── environment.py          # MuJoCo env: load scene, step, render camera
-│   ├── controller.py           # PD controller + gait primitives (walk, turn, sit...)
+├── sim/                        # Simulation layer
+│   ├── fake_env.py             # 2D fake sim for fast iteration without MuJoCo
+│   ├── mujoco_env.py           # Real MuJoCo env: load scene, step, render camera
+│   ├── controller.py           # Optional gait/control helpers for the real sim
 │   └── scenes/                 # MJCF XML files
 │       ├── go2/                # Go2 model from mujoco-menagerie
 │       ├── mission_1.xml       # Wake Up scene
@@ -28,7 +29,8 @@ mars-prompt-arena/
 │
 ├── agent/                      # Gemini agentic loop
 │   ├── brain.py                # Gemini API calls, function calling, narration
-│   ├── skills.py               # Tool definitions (the robot's capabilities)
+│   ├── mock_brain.py           # Local keyword-based brain for offline development
+│   ├── tools.py                # Tool definitions (the robot's capabilities)
 │   └── dispatcher.py           # Maps Gemini tool calls → sim actions
 │
 ├── missions/                   # Mission logic
@@ -61,10 +63,10 @@ mars-prompt-arena/
        |
 4. brain.py calls Gemini with:
    - user prompt
-   - current camera frame (JPEG) from MuJoCo
+   - current camera frame (JPEG) from the active sim backend
    - robot state (position, joints, battery mock)
    - mission context (objective, remaining prompts)
-   - available tools (skill list)
+   - available tools (tool list from tools.py)
        |
 5. Gemini returns one or more tool calls
    e.g. walk_forward(speed=0.4, duration=3.0)
@@ -72,7 +74,7 @@ mars-prompt-arena/
        |
 6. dispatcher.py translates tool calls → sim actions
        |
-7. environment.py steps MuJoCo, executes actions
+7. fake_env.py or mujoco_env.py executes actions
    → renders new camera frame after each action
        |
 8. brain.py calls Gemini again with action results

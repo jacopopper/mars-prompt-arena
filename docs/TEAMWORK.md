@@ -157,7 +157,7 @@ agent/mock_brain.py
   → Builder A unblocked immediately
 
 agent/brain.py
-  → Gemini 2.0 Flash with function calling
+  → Gemini 2.5 Flash with function calling
   → plan(): prompt + base64 frame + state summary + tools → parse tool calls
   → narrate(): results → first-person narration as CANIS-1
   → switch via SIM_MODE / BRAIN_MODE env vars
